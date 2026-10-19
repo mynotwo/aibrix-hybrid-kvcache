@@ -16,6 +16,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import enum
 import logging
+import uuid
 from dataclasses import dataclass, field
 from functools import wraps
 from typing import (
@@ -89,6 +90,11 @@ from aibrix_kvcache.common.absl_logging import (
     log_if,
 )
 from aibrix_kvcache.common.cached_pyobject import CachedPyObjectBase
+from aibrix_kvcache.compression_profiler import (
+    EventType,
+    ProfileMode,
+    TraceContext,
+)
 from aibrix_kvcache.integration.vllm.vllm_compat import get_attn_backend
 from aibrix_kvcache.metrics import (
     MS_BUCKETS,
@@ -462,6 +468,35 @@ class AIBrixOffloadingConnectorRequestState(enum.IntEnum):
     RECEIVING = enum.auto()
 
 
+def _request_trace_context(
+    req_id: str, previous: TraceContext | None = None
+) -> TraceContext | None:
+    """Scheduler-owned context; no tensor, thread-local, or invented version."""
+    try:
+        mode = ProfileMode(
+            aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_MODE.lower()
+        )
+        if mode == ProfileMode.OFF:
+            return None
+        if previous is not None:
+            return previous.child(
+                uuid.uuid4().hex, dependencies=(previous.operation_id,)
+            )
+        experiment_id = (
+            aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_EXPERIMENT_ID
+        )
+        run_id = (
+            aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_RUN_ID
+        )
+        if not experiment_id or not run_id:
+            return None
+        return TraceContext(
+            experiment_id, run_id, req_id, mode, uuid.uuid4().hex
+        )
+    except Exception:
+        return None
+
+
 @dataclass
 class AIBrixOffloadingConnectorRequestMetadata(CachedPyObjectBase):
     req_id: str = ""
@@ -481,6 +516,7 @@ class AIBrixOffloadingConnectorRequestMetadata(CachedPyObjectBase):
         AIBrixOffloadingConnectorRequestState.INIT
     )
     resumed_from_preemption: bool = False
+    trace_context: TraceContext | None = None
 
     def __str__(self) -> str:
         seq_slot_mapping_off = (
@@ -554,9 +590,17 @@ class AIBrixOffloadingConnectorMetadata(KVConnectorMetadata):
         request_id: str,
         **kwargs,
     ) -> None:
-        self.requests.setdefault(
+        meta = self.requests.setdefault(
             request_id, AIBrixOffloadingConnectorRequestMetadata()
-        ).__dict__.update(req_id=request_id, **kwargs)
+        )
+        meta.__dict__.update(req_id=request_id, **kwargs)
+        if (
+            kwargs.get("state")
+            == AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV
+        ):
+            meta.trace_context = _request_trace_context(
+                meta.req_id, meta.trace_context
+            )
 
     def pop_request(
         self,
@@ -912,6 +956,15 @@ class AIBrixOffloadingConnectorWorker:
 
             seq_meta_cache = self._meta_cache[req_id]
             seq_meta_cache.extend(meta.seq_token_ids, meta.seq_slot_mapping)
+            context = meta.trace_context
+            if context is not None and getattr(
+                seq_meta_cache, "_trace_operation", None
+            ) != context.operation_id:
+                self.cache.trace_finish(
+                    (context, None), EventType.REQUEST, phase="scheduled",
+                    result="received",
+                )
+                seq_meta_cache._trace_operation = context.operation_id
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
         self.kv_caches = kv_caches
@@ -977,6 +1030,7 @@ class AIBrixOffloadingConnectorWorker:
         seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
     ) -> int:
         logger.debug("_recv_kv_sync_impl: %s", seq_request_meta)
+        trace_context = seq_request_meta.trace_context
         seq_request_id = seq_request_meta.req_id
         seq_cached_meta = self._meta_cache[seq_request_id]
         seq_all_tokens = seq_cached_meta.get_context_tokens_view()
@@ -1035,7 +1089,10 @@ class AIBrixOffloadingConnectorWorker:
                 self.cache.prefetch(chunk_prefix + chunk_tokens, next_tokens)
 
             # get KV caches from offloading service
-            status = self.cache.acquire(chunk_prefix, chunk_tokens)
+            status = self.cache.acquire(
+                chunk_prefix, chunk_tokens,
+                trace_context=trace_context,
+            )
 
             if not status.is_ok():
                 if not status.is_not_found():
@@ -1059,6 +1116,10 @@ class AIBrixOffloadingConnectorWorker:
                 + length  # type: ignore[index]
             ]
 
+            import_span = self.cache.trace_start(
+                trace_context,
+                dependencies=getattr(handle, "_profiler_dependencies", ()),
+            )
             with perf_timer() as get_kernel_onload_dur_ms:
                 reshape_and_cache_multi_layer(
                     kv_blocks,
@@ -1071,6 +1132,10 @@ class AIBrixOffloadingConnectorWorker:
                     self.block_layout.name,
                     self.kv_layout_blocks_first,
                 )
+            self.cache.trace_finish(
+                import_span, EventType.KV_IMPORT, phase="connector_sync",
+                result="copied", restore_result="restored", token_count=length,
+            )
 
             logger.info(
                 "Request[id=%s] onloads %d tokens in %.4f ms",
@@ -1277,6 +1342,7 @@ class AIBrixOffloadingConnectorWorker:
                 + length  # type: ignore[index]
             ]
 
+            export_span = self.cache.trace_start(seq_request_meta.trace_context)
             with perf_timer() as get_kernel_offload_dur_ms:
                 reshape_and_offload_multi_layer(
                     tensors,
@@ -1289,6 +1355,10 @@ class AIBrixOffloadingConnectorWorker:
                     self.block_layout.name,
                     self.kv_layout_blocks_first,
                 )
+            self.cache.trace_finish(
+                export_span, EventType.KV_EXPORT, phase="connector_sync",
+                result="copied", token_count=length,
+            )
 
             logger.info(
                 "Request[id=%s] offloads %d tokens in %.4f ms",
@@ -1298,7 +1368,10 @@ class AIBrixOffloadingConnectorWorker:
             )
 
             # put KV caches to offloading service
-            status = self.cache.put(chunk_prefix, chunk_tokens[:length], handle)
+            status = self.cache.put(
+                chunk_prefix, chunk_tokens[:length], handle,
+                trace_context=export_span[0],
+            )
             if not status.is_ok():
                 # TODO: notify other ranks in the group to stop sending
                 # if this is a fatal error

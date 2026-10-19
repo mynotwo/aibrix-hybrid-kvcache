@@ -31,7 +31,12 @@ logger = getLogger(__name__)
 
 
 @AsyncBase.async_wrap(
-    exists="_exists", get="_get", put="_put", delete="_delete"
+    exists="_exists",
+    get="_get",
+    put="_put",
+    get_bytes="_get_bytes",
+    put_bytes="_put_bytes",
+    delete="_delete",
 )
 class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
     """Shared File System (SHFS) connector for KVCache L2 storage.
@@ -71,7 +76,7 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
     @property
     def feature(self) -> ConnectorFeature:
         """SHFS connector features."""
-        feature = ConnectorFeature(mput_mget=True)
+        feature = ConnectorFeature(mput_mget=True, variable_payload=True)
         return feature
 
     def __del__(self) -> None:
@@ -301,6 +306,26 @@ class SHFSConnector(Connector[bytes, torch.Tensor], AsyncBase):
             temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
             temp_filepath.unlink(missing_ok=True)
             return Status(StatusCodes.ERROR, f"Failed to put value: {e}")
+
+    @Status.capture_exception
+    def _get_bytes(self, key: bytes) -> Status[bytes]:
+        filepath = self._key_to_filepath(key)
+        if not filepath.exists():
+            return Status(StatusCodes.NOT_FOUND)
+        return Status.ok(filepath.read_bytes())
+
+    @Status.capture_exception
+    def _put_bytes(self, key: bytes, payload: bytes) -> Status:
+        filepath = self._key_to_filepath(key)
+        filepath.parent.mkdir(parents=True, exist_ok=True)
+        temp_filepath = filepath.with_suffix(filepath.suffix + ".tmp")
+        try:
+            temp_filepath.write_bytes(payload)
+            temp_filepath.replace(filepath)
+        except Exception:
+            temp_filepath.unlink(missing_ok=True)
+            raise
+        return Status.ok()
 
     @Status.capture_exception
     def _delete(self, key: bytes) -> Status:

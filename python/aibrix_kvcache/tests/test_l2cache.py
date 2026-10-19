@@ -21,10 +21,13 @@ import pytest
 import torch
 
 from aibrix_kvcache.cache_hashable import KVCacheKeyTypes, TokenListView
+from aibrix_kvcache.compression_profiler import ProfileMode, TraceContext
 from aibrix_kvcache.l2 import KeyBuilder, L2Cache
 from aibrix_kvcache.l2.key_builders import Hasher
 from aibrix_kvcache.memory import (
-    ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
+    ManagedMemoryRegion,
+    MemoryRegion,
+    TensorPoolAllocator,
 )
 
 from .conftest import (
@@ -178,6 +181,314 @@ async def test_put_and_get_aligned(cache_key_fixture, l2cache_fixture):
     assert exists_status.value == 2
     release_mrs(put_mrs)
     release_mrs(get_mrs)
+
+
+async def _read_compressed_envelope(cache, root):
+    if cache._backend.name == "Memory":
+        key = next(iter(cache._backend._entries))
+        return key, (await cache._backend.get_bytes(key)).get()
+    path = next(path for path in root.rglob("*") if path.is_file())
+    return path, path.read_bytes()
+
+
+async def _replace_compressed_envelope(cache, location, envelope):
+    if cache._backend.name == "Memory":
+        assert (await cache._backend.delete(location)).is_ok()
+        assert (await cache._backend.put_bytes(location, envelope)).is_ok()
+    else:
+        location.write_bytes(envelope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["MEMORY", "SHFS"])
+@pytest.mark.parametrize("codec", ["IDENTITY", "ZSTD"])
+async def test_real_connector_compressed_round_trip_is_bytewise_exact(
+    backend,
+    codec,
+    cache_conf_fixture,
+    cache_key_fixture,
+    tmp_path,
+    monkeypatch,
+):
+    _, spec = cache_conf_fixture
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_SHFS_ROOT", str(tmp_path))
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES", "1048576")
+    cache = L2Cache(
+        backend_name=backend,
+        placement_policy="SIMPLE",
+        namespace="real-connector-test",
+        block_spec=spec,
+        executor=ThreadPoolExecutor(max_workers=2),
+        compression=codec,
+    )
+    try:
+        cache.open().raise_if_not_ok()
+        allocator = TensorPoolAllocator.create(
+            capacity_nbytes=8 * spec.block_nbytes
+        )
+        tokens = cache_key_fixture(
+            list(range(spec.block_ntokens)), spec.block_ntokens
+        )
+        put_mrs = build_put_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        raw = put_mrs[0].tobytes()
+        assert (await cache.put(None, tokens, put_mrs)).is_ok()
+
+        _, envelope = await _read_compressed_envelope(cache, tmp_path)
+        block = cache._compression.deserialize(envelope)
+        sizes = cache._compression.encoded_sizes(block, envelope)
+        assert block.metadata.raw_length == len(raw)
+        assert sizes.envelope == sizes.payload + sizes.metadata + sizes.framing
+
+        get_mrs = build_get_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        assert (await cache.get(None, tokens, get_mrs)).is_ok()
+        assert get_mrs[0].tobytes() == raw
+        release_mrs(put_mrs)
+        release_mrs(get_mrs)
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["MEMORY", "SHFS"])
+@pytest.mark.parametrize("corruption", ["truncated", "checksum", "identity"])
+async def test_real_connector_restore_failure_leaves_destination_unchanged(
+    backend,
+    corruption,
+    cache_conf_fixture,
+    cache_key_fixture,
+    tmp_path,
+    monkeypatch,
+):
+    _, spec = cache_conf_fixture
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_SHFS_ROOT", str(tmp_path))
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES", "1048576")
+    cache = L2Cache(
+        backend_name=backend,
+        placement_policy="SIMPLE",
+        namespace="fail-closed-test",
+        block_spec=spec,
+        executor=ThreadPoolExecutor(max_workers=2),
+        compression="ZSTD",
+    )
+    try:
+        cache.open().raise_if_not_ok()
+        allocator = TensorPoolAllocator.create(
+            capacity_nbytes=8 * spec.block_nbytes
+        )
+        tokens = cache_key_fixture(
+            list(range(spec.block_ntokens)), spec.block_ntokens
+        )
+        put_mrs = build_put_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        assert (await cache.put(None, tokens, put_mrs)).is_ok()
+        location, envelope = await _read_compressed_envelope(cache, tmp_path)
+        if corruption == "truncated":
+            invalid = envelope[:-1]
+        else:
+            block = cache._compression.deserialize(envelope)
+            field = "checksum" if corruption == "checksum" else "generation"
+            value = "0" * 64 if corruption == "checksum" else 1
+            invalid = cache._compression.serialize(
+                block._replace(
+                    metadata=block.metadata._replace(**{field: value})
+                )
+            )
+        await _replace_compressed_envelope(cache, location, invalid)
+
+        get_mrs = build_get_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        before = get_mrs[0].tobytes()
+        status = await cache.get(None, tokens, get_mrs)
+        assert status.is_error(), status
+        assert get_mrs[0].tobytes() == before
+        release_mrs(put_mrs)
+        release_mrs(get_mrs)
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_shfs_compressed_put_get_round_trip(
+    cache_conf_fixture, cache_key_fixture, tmp_path, monkeypatch
+):
+    _, spec = cache_conf_fixture
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_SHFS_ROOT", str(tmp_path))
+    cache = L2Cache(
+        backend_name="SHFS",
+        placement_policy="SIMPLE",
+        namespace="compressed-test",
+        block_spec=spec,
+        executor=ThreadPoolExecutor(max_workers=2),
+        compression="ZSTD",
+    )
+    try:
+        cache.open().raise_if_not_ok()
+        allocator = TensorPoolAllocator.create(
+            capacity_nbytes=8 * spec.block_nbytes
+        )
+        tokens = cache_key_fixture(
+            [i for i in range(spec.block_ntokens)], spec.block_ntokens
+        )
+        put_mrs = build_put_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        expected = put_mrs[0].tobytes()
+
+        put_status = await cache.put(None, tokens, put_mrs)
+        assert put_status.is_ok(), put_status
+        stored_files = [path for path in tmp_path.rglob("*") if path.is_file()]
+        assert len(stored_files) == 1
+        assert stored_files[0].read_bytes().startswith(b"AIBXKVC1")
+
+        get_mrs = build_get_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        get_status = await cache.get(None, tokens, get_mrs)
+        assert get_status.is_ok(), get_status
+        assert get_mrs[0].tobytes() == expected
+        release_mrs(put_mrs)
+        release_mrs(get_mrs)
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_shfs_compressed_corruption_fails_without_modifying_destination(
+    cache_conf_fixture, cache_key_fixture, tmp_path, monkeypatch
+):
+    _, spec = cache_conf_fixture
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_SHFS_ROOT", str(tmp_path))
+    cache = L2Cache(
+        backend_name="SHFS",
+        placement_policy="SIMPLE",
+        namespace="corruption-test",
+        block_spec=spec,
+        executor=ThreadPoolExecutor(max_workers=2),
+        compression="ZSTD",
+    )
+    try:
+        cache.open().raise_if_not_ok()
+        allocator = TensorPoolAllocator.create(
+            capacity_nbytes=8 * spec.block_nbytes
+        )
+        tokens = cache_key_fixture(
+            [i for i in range(spec.block_ntokens)], spec.block_ntokens
+        )
+        put_mrs = build_put_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        assert (await cache.put(None, tokens, put_mrs)).is_ok()
+        stored_file = next(
+            path for path in tmp_path.rglob("*") if path.is_file()
+        )
+        corrupted = bytearray(stored_file.read_bytes())
+        corrupted[-1] ^= 0xFF
+        stored_file.write_bytes(corrupted)
+
+        get_mrs = build_get_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        before = get_mrs[0].tobytes()
+        get_status = await cache.get(None, tokens, get_mrs)
+        assert get_status.is_error(), get_status
+        assert get_mrs[0].tobytes() == before
+        release_mrs(put_mrs)
+        release_mrs(get_mrs)
+    finally:
+        cache.close()
+
+
+@pytest.mark.asyncio
+async def test_shfs_compressed_trace_records_restore_and_rejection(
+    cache_conf_fixture, cache_key_fixture, tmp_path, monkeypatch
+):
+    _, spec = cache_conf_fixture
+    root = tmp_path / "shfs"
+    trace_file = tmp_path / "trace" / "cache.jsonl"
+    trace_file.parent.mkdir()
+    monkeypatch.setenv("AIBRIX_KV_CACHE_OL_SHFS_ROOT", str(root))
+    monkeypatch.setenv(
+        "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_MODE", "DETAILED"
+    )
+    monkeypatch.setenv(
+        "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_OUTPUT", str(trace_file)
+    )
+    monkeypatch.setenv(
+        "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_REQUEST_IDS", "target"
+    )
+    context = TraceContext("test", "run", "target", ProfileMode.DETAILED)
+    cache = L2Cache(
+        backend_name="SHFS",
+        placement_policy="SIMPLE",
+        namespace="trace-test",
+        block_spec=spec,
+        executor=ThreadPoolExecutor(max_workers=2),
+        compression="ZSTD",
+    )
+    try:
+        cache.open().raise_if_not_ok()
+        allocator = TensorPoolAllocator.create(
+            capacity_nbytes=8 * spec.block_nbytes
+        )
+        tokens = cache_key_fixture(
+            list(range(spec.block_ntokens)), spec.block_ntokens
+        )
+        put_mrs = build_put_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        get_mrs = build_get_mrs(
+            allocator, spec.block_nbytes, spec.block_ntokens, None, tokens
+        )
+        assert (
+            await cache.put(None, tokens, put_mrs, trace_context=context)
+        ).is_ok()
+        assert (
+            await cache.get(None, tokens, get_mrs, trace_context=context)
+        ).is_ok()
+
+        stored_file = next(path for path in root.rglob("*") if path.is_file())
+        corrupted = bytearray(stored_file.read_bytes())
+        corrupted[-1] ^= 0xFF
+        stored_file.write_bytes(corrupted)
+        assert (
+            await cache.get(None, tokens, get_mrs, trace_context=context)
+        ).is_error()
+        cache._profiler_recorder.flush()
+
+        import json
+
+        records = [
+            json.loads(line) for line in trace_file.read_text().splitlines()
+        ]
+        required = {
+            "request_id",
+            "operation_id",
+            "block_key",
+            "generation",
+            "layer",
+            "cache_group",
+            "codec",
+            "source_tier",
+            "start_ns",
+            "raw_bytes",
+            "payload_bytes",
+            "end_ns",
+            "checksum_after",
+            "restore_result",
+        }
+        assert all(required <= record.keys() for record in records)
+        assert any(record["restore_result"] == "restored" for record in records)
+        assert any(record["restore_result"] == "rejected" for record in records)
+        release_mrs(put_mrs)
+        release_mrs(get_mrs)
+    finally:
+        cache.close()
 
 
 @pytest.mark.asyncio

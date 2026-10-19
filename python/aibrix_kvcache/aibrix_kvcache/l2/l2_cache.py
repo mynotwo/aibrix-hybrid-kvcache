@@ -14,6 +14,7 @@
 
 import asyncio
 import logging
+import time
 from concurrent.futures import Executor
 from typing import Any, Callable, Iterator, List, Sequence, Tuple, cast
 
@@ -23,6 +24,20 @@ from more_itertools import batched
 from ..cache_handle import KVCacheHandle
 from ..cache_hashable import BlockHashes, KVCacheKeyTypes, TokenListView
 from ..common.absl_logging import getLogger, log_every_n_seconds
+from ..compression import IdentityCompressionAdapter, ZstdCompressionAdapter
+from ..compression_profiler import (
+    EventType,
+    ProfileMode,
+    TraceContext,
+)
+from ..compression_profiler.operation import (
+    OperationTrace,
+    TraceSink,
+)
+from ..compression_profiler.operation import (
+    profiler_config as _profiler_config,
+)
+from ..compression_profiler.recorder import NullRecorder, ShardedRingRecorder
 from ..memory import ExternalMemoryRegion, ManagedMemoryRegion, MemoryRegion
 from ..meta_service import MetaService
 from ..metrics import L2CacheMetrics, MeasurableBase, MetricRecorder
@@ -42,6 +57,64 @@ from .placement import Placement, PlacementConfig
 logger = getLogger(__name__)
 
 
+class _L2Trace(OperationTrace):
+    def __init__(self, cache, context: TraceContext, result=None):
+        super().__init__(
+            TraceSink(
+                recorder=cache._profiler_recorder,
+                mode=cache._profiler_mode,
+                requests=cache._profiler_requests,
+                codec=cache._codec,
+                cache_group=cache._cache_group,
+                cache_spec=cache.block_spec.signature,
+            ),
+            context,
+            result,
+        )
+
+    def storage(self, kind, keys, mrs, statuses, start):
+        if isinstance(statuses, Status):
+            statuses = [statuses] * len(keys)
+        for key, mr, status in zip(keys, mrs, statuses):
+            length = (
+                mr.length
+                if isinstance(mr, MemoryRegion)
+                else sum(region.length for region in mr)
+            )
+            writing = kind == EventType.L2_PUT
+            values = {
+                "connector_write_bytes"
+                if writing
+                else "connector_read_bytes": length if status.is_ok() else None,
+                "destination_tier" if writing else "source_tier": "L2",
+            }
+            operation = self.event(
+                kind,
+                key,
+                start,
+                self.context.dependency_ids,
+                phase="batch" if len(keys) > 1 else "",
+                result=("stored" if writing else "loaded")
+                if status.is_ok()
+                else "not_found"
+                if status.is_not_found()
+                else "storage_error",
+                **values,
+            )
+            self.failed_status(status, key, start, (operation,))
+
+    def failed_status(self, status, key, start, dependencies):
+        if status.is_ok() or status.is_not_found():
+            return
+        self.event(
+            EventType.ERROR_RECOVERY, key, start, dependencies,
+            result="rejected", restore_result="rejected",
+            error_class=(type(status.value).__name__
+                         if isinstance(status.value, Exception)
+                         else status.error_code.name),
+        )
+
+
 class L2Cache(MeasurableBase):
     def __init__(
         self,
@@ -55,6 +128,7 @@ class L2Cache(MeasurableBase):
         metrics: L2CacheMetrics | None = None,
         meta_service: MetaService | None = None,
         key_builder: KeyBuilder | None = None,
+        compression: str = "",
     ) -> None:
         """Create a cache object.
         Args:
@@ -87,6 +161,20 @@ class L2Cache(MeasurableBase):
         self._mr_ops_queue: asyncio.Queue | None = None
         self._mr_ops_task: asyncio.Task | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        compression = compression.strip().upper()
+        if compression not in ("", "ZSTD", "IDENTITY"):
+            raise ValueError(f"Unsupported L2 compression codec: {compression}")
+        self._compression = (
+            ZstdCompressionAdapter()
+            if compression == "ZSTD"
+            else IdentityCompressionAdapter()
+            if compression == "IDENTITY"
+            else None
+        )
+        self._codec = compression.lower() or None
+        self._profiler_recorder = NullRecorder()
+        mode, capacity, output, requests = _profiler_config()
+        self._profiler_mode, self._profiler_requests = mode, requests
 
         cat_head_ids = "_".join(
             [
@@ -126,6 +214,20 @@ class L2Cache(MeasurableBase):
                 refresh_interval_s=refresh_interval_s,
             )
             self._backend = Placement.create(placement_config)
+
+        if (
+            self._compression is not None
+            and not self._backend.feature.variable_payload
+        ):
+            raise ValueError(
+                f"L2 compression requires a variable-payload connector; "
+                f"{self._backend.name} does not support it"
+            )
+        self._cache_group = partition_id
+        if mode != ProfileMode.OFF:
+            self._profiler_recorder = ShardedRingRecorder(
+                capacity=capacity, output=output
+            )
 
         logger.info(
             "%s is initialized. Using partition_id=%s.", str(self), partition_id
@@ -198,6 +300,9 @@ class L2Cache(MeasurableBase):
 
     def close(self) -> Status:
         """Close the cache."""
+        recorder = getattr(self, "_profiler_recorder", None)
+        if recorder is not None:
+            recorder.close()
         if self._backend is not None:
             try:
                 if self._mr_ops_queue is not None and self._loop is not None:
@@ -208,6 +313,21 @@ class L2Cache(MeasurableBase):
                 pass
             return self._backend.close()
         return Status.ok()
+
+    def _trace(
+        self, context: TraceContext | None, result=None
+    ) -> _L2Trace | None:
+        if (
+            self._profiler_mode == ProfileMode.OFF
+            or context is None
+            or context.mode == ProfileMode.OFF
+        ):
+            return None
+        try:
+            return _L2Trace(self, context, result)
+        except Exception:
+            self._profiler_recorder.invalidate("observation_error")
+            return None
 
     def register_slabs(self, slabs: List[torch.Tensor]) -> Status:
         if not self._backend.feature.rdma:
@@ -298,6 +418,8 @@ class L2Cache(MeasurableBase):
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         kv_tensors: (MemoryRegion | Sequence[MemoryRegion] | KVCacheHandle),
+        *,
+        trace_context: TraceContext | None = None,
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
@@ -359,21 +481,33 @@ class L2Cache(MeasurableBase):
             raise ValueError(f"Unsupported type {type(kv_tensors).__name__}")
 
         keys = tuple(self._cache_block_keys(prefix, query))
+        trace = self._trace(trace_context)
         # use mget if mput_mget is enabled
-        if self._backend.feature.mput_mget:
+        if self._compression is None and self._backend.feature.mput_mget:
             block_batches = self._backend.get_batches(
                 keys, blocks, self.op_batch
             )
-            return await self._mput_impl(block_batches)
+            try:
+                return await self._mput_impl(block_batches, trace)
+            finally:
+                if trace is not None:
+                    with trace.observation():
+                        trace.finish()
         else:
             block_batches = tuple(batched(zip(keys, blocks), self.op_batch))
-            return await self._put_impl(block_batches)
+            try:
+                return await self._put_impl(block_batches, trace)
+            finally:
+                if trace is not None:
+                    with trace.observation():
+                        trace.finish()
 
     async def _mput_impl(
         self,
         block_batches: Sequence[
             Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
         ],
+        trace: _L2Trace | None = None,
     ) -> Status[int]:
         num_processed_blocks = 0
         for batch in block_batches:
@@ -390,7 +524,13 @@ class L2Cache(MeasurableBase):
                             )
                         mr.seal()
 
+            started = trace.clock() if trace is not None else 0
             statuses = await self._backend.mput(cache_keys, mrs)
+            if trace is not None:
+                with trace.observation():
+                    trace.storage(
+                        EventType.L2_PUT, cache_keys, mrs, statuses, started
+                    )
 
             if isinstance(statuses, Sequence) and all(
                 status.is_ok() for status in statuses
@@ -416,7 +556,7 @@ class L2Cache(MeasurableBase):
 
                 failures = [status for status in statuses if not status.is_ok()]
                 if len(failures) > 0:
-                    return failures[0].result()
+                    return failures[0]
                 return Status(StatusCodes.ERROR)
 
         return Status.ok(num_processed_blocks)
@@ -426,6 +566,7 @@ class L2Cache(MeasurableBase):
         block_batches: Sequence[
             Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
         ],
+        trace: _L2Trace | None = None,
     ) -> Status[int]:
         num_processed_blocks = 0
         for batch in block_batches:
@@ -434,7 +575,9 @@ class L2Cache(MeasurableBase):
             async with asyncio.TaskGroup() as tg:
                 for key_pair, block in batch:
                     tasks.append(
-                        tg.create_task(self._backend_put_impl(key_pair, block))
+                        tg.create_task(
+                            self._backend_put_impl(key_pair, block, trace)
+                        )
                     )
 
             if len(tasks) == 0:
@@ -465,6 +608,7 @@ class L2Cache(MeasurableBase):
         self,
         key_pair: Tuple[KVCacheKeyTypes, bytes],
         mr: MemoryRegion | Sequence[MemoryRegion],
+        trace: _L2Trace | None = None,
     ) -> Status:
         """Put kv tensors to the backend.
         Args:
@@ -483,7 +627,92 @@ class L2Cache(MeasurableBase):
                     query=real_key[-self.block_ntokens :],
                 )
             mr.seal()
-        return await self._backend.put(cache_key, mr)
+        if self._compression is None:
+            started = trace.clock() if trace is not None else 0
+            status = await self._backend.put(cache_key, mr)
+            if trace is not None:
+                with trace.observation():
+                    trace.storage(
+                        EventType.L2_PUT, [cache_key], [mr], status, started
+                    )
+            return status
+        if not isinstance(mr, MemoryRegion):
+            return Status(
+                StatusCodes.INVALID,
+                "Compressed L2 storage requires one contiguous MemoryRegion",
+            )
+        started = trace.clock() if trace is not None else 0
+        cpu_started = time.process_time_ns()
+        dependency = ()
+        try:
+            block = self._compression.encode(
+                mr.tobytes(),
+                shape=self.block_shape,
+                dtype=str(self.block_dtype),
+                layout=self.block_layout.name,
+                block_key=cache_key.hex(),
+                generation=0,
+                cache_group=self._cache_group,
+            )
+            encoded = self._compression.serialize(block)
+            if trace is not None:
+                with trace.observation():
+                    # Provenance: encoded was serialized from this block above.
+                    sizes = self._compression.encoded_sizes(
+                        block, encoded, trusted=True
+                    )
+                    dependency = (
+                        trace.event(
+                            EventType.CODEC_ENCODE,
+                            cache_key,
+                            started,
+                            trace.context.dependency_ids,
+                            raw_bytes=block.metadata.raw_length,
+                            payload_bytes=sizes.payload,
+                            metadata_bytes=sizes.metadata,
+                            framing_bytes=sizes.framing,
+                            envelope_bytes=sizes.envelope,
+                            checksum_algorithm="sha256",
+                            checksum_before=block.metadata.checksum,
+                            cpu_process_start_ns=cpu_started,
+                            cpu_process_end_ns=time.process_time_ns(),
+                            result="encoded",
+                            **trace.resources(),
+                        ),
+                    )
+                    started = trace.now()
+            status = await self._backend.put_bytes(cache_key, encoded)
+            if trace is not None:
+                with trace.observation():
+                    operation = trace.event(
+                        EventType.L2_PUT,
+                        cache_key,
+                        started,
+                        dependency,
+                        destination_tier="L2",
+                        envelope_bytes=len(encoded),
+                        connector_write_bytes=len(encoded)
+                        if status.is_ok()
+                        else None,
+                        result="stored" if status.is_ok() else "store_error",
+                    )
+                    trace.failed_status(
+                        status, cache_key, started, (operation,)
+                    )
+            return status
+        except Exception as exc:
+            if trace is not None:
+                with trace.observation():
+                    trace.event(
+                        EventType.ERROR_RECOVERY,
+                        cache_key,
+                        started,
+                        dependency,
+                        result="rejected",
+                        error_class=type(exc).__name__,
+                        restore_result="rejected",
+                    )
+            return Status(StatusCodes.ERROR, value=exc)
 
     @nvtx_range("get", "kv_cache_ol.L2Cache")
     @MeasurableBase.measure(MetricRecorder.OP.GET)
@@ -492,6 +721,9 @@ class L2Cache(MeasurableBase):
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
+        *,
+        trace_context: TraceContext | None = None,
+        trace_result: list[str] | None = None,
     ) -> Status[int]:
         """Get kv tensors from the cache.
         Args:
@@ -508,25 +740,37 @@ class L2Cache(MeasurableBase):
         assert len(mrs) == len(query) // self.block_ntokens
 
         keys = tuple(self._cache_block_keys(prefix, query))
+        trace = self._trace(trace_context, trace_result)
         # use mput if mput_mget is enabled
-        if self._backend.feature.mput_mget:
+        if self._compression is None and self._backend.feature.mput_mget:
             block_batches = tuple(
                 self._backend.get_batches(keys, mrs, self.op_batch)
             )
-            return await self._mget_impl(block_batches)
+            try:
+                return await self._mget_impl(block_batches, trace)
+            finally:
+                if trace is not None:
+                    with trace.observation():
+                        trace.finish()
         else:
             block_batches = tuple(batched(zip(keys, mrs), self.op_batch))
-            return await self._get_impl(block_batches)
+            try:
+                return await self._get_impl(block_batches, trace)
+            finally:
+                if trace is not None:
+                    with trace.observation():
+                        trace.finish()
 
     async def _mget_impl(
         self,
         block_batches: Sequence[
             Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
         ],
+        trace: _L2Trace | None = None,
     ) -> Status[int]:
         nr = 0
         for batch in block_batches:
-            status = await self._backend_mget_impl(*zip(*batch))
+            status = await self._backend_mget_impl(*zip(*batch), trace=trace)
 
             should_break = False
             if not status.is_ok():
@@ -546,6 +790,7 @@ class L2Cache(MeasurableBase):
         self,
         key_pairs: Sequence[Tuple[KVCacheKeyTypes, bytes]],
         mrs: Sequence[MemoryRegion | Sequence[MemoryRegion]],
+        trace: _L2Trace | None = None,
     ) -> Status[int]:
         """Get kv tensors from the backend using mget.
         Args:
@@ -558,7 +803,13 @@ class L2Cache(MeasurableBase):
             Number of blocks that are fetched.
         """
         real_keys, cache_keys = zip(*key_pairs)
+        started = trace.clock() if trace is not None else 0
         statuses = await self._backend.mget(cache_keys, mrs)
+        if trace is not None:
+            with trace.observation():
+                trace.storage(
+                    EventType.L2_GET, cache_keys, mrs, statuses, started
+                )
         if isinstance(statuses, Status):
             status = cast(Status, statuses)
             if not status.is_ok():
@@ -596,14 +847,18 @@ class L2Cache(MeasurableBase):
         block_batches: Sequence[
             Sequence[Tuple[Any, MemoryRegion | Sequence[MemoryRegion]]]
         ],
+        trace: _L2Trace | None = None,
     ) -> Status[int]:
         nr = 0
+        first_failure: Status | None = None
         for batch in block_batches:
             tasks = []
             async with asyncio.TaskGroup() as tg:
                 for key_pair, mr in batch:
                     tasks.append(
-                        tg.create_task(self._backend_get_impl(key_pair, mr))
+                        tg.create_task(
+                            self._backend_get_impl(key_pair, mr, trace)
+                        )
                     )
 
             if len(tasks) == 0:
@@ -612,6 +867,8 @@ class L2Cache(MeasurableBase):
             should_break = False
             for i in range(len(tasks)):
                 if not tasks[i].done() or not tasks[i].result().is_ok():
+                    if tasks[i].done():
+                        first_failure = tasks[i].result()
                     should_break = True
                     break
                 nr += 1
@@ -620,6 +877,8 @@ class L2Cache(MeasurableBase):
                 break
 
         if nr == 0:
+            if first_failure is not None and not first_failure.is_not_found():
+                return first_failure
             return Status(StatusCodes.NOT_FOUND)
 
         return Status.ok(nr)
@@ -646,6 +905,7 @@ class L2Cache(MeasurableBase):
         self,
         key_pair: Tuple[KVCacheKeyTypes, bytes],
         mr: MemoryRegion | Sequence[MemoryRegion],
+        trace: _L2Trace | None = None,
     ) -> Status:
         """Get kv tensors from the backend.
         Args:
@@ -657,9 +917,135 @@ class L2Cache(MeasurableBase):
             The status of the get operation.
         """
         real_key, cache_key = key_pair
-        status = await self._backend.get(cache_key, mr)
-        if not status.is_ok():
-            return status
+        if self._compression is None:
+            started = trace.clock() if trace is not None else 0
+            status = await self._backend.get(cache_key, mr)
+            if trace is not None:
+                with trace.observation():
+                    trace.storage(
+                        EventType.L2_GET, [cache_key], [mr], status, started
+                    )
+            if not status.is_ok():
+                return status
+        else:
+            if not isinstance(mr, MemoryRegion):
+                return Status(
+                    StatusCodes.INVALID,
+                    "Compressed L2 storage requires one contiguous "
+                    "MemoryRegion",
+                )
+            started = trace.clock() if trace is not None else 0
+            dependency = ()
+            try:
+                status = await self._backend.get_bytes(cache_key)
+            except Exception as exc:
+                if trace is not None:
+                    with trace.observation():
+                        trace.event(
+                            EventType.ERROR_RECOVERY,
+                            cache_key,
+                            started,
+                            trace.context.dependency_ids,
+                            result="rejected",
+                            restore_result="rejected",
+                            error_class=type(exc).__name__,
+                        )
+                raise
+            if trace is not None:
+                with trace.observation():
+                    dependency = (
+                        trace.event(
+                            EventType.L2_GET,
+                            cache_key,
+                            started,
+                            trace.context.dependency_ids,
+                            source_tier="L2",
+                            connector_read_bytes=(
+                                len(status.get()) if status.is_ok() else None
+                            ),
+                            result=(
+                                "loaded"
+                                if status.is_ok()
+                                else "not_found"
+                                if status.is_not_found()
+                                else "load_error"
+                            ),
+                        ),
+                    )
+                    trace.failed_status(status, cache_key, started, dependency)
+            if not status.is_ok():
+                return status
+            try:
+                envelope = status.get()
+                started = trace.clock() if trace is not None else 0
+                cpu_started = time.process_time_ns()
+                block = self._compression.deserialize(envelope)
+                raw = self._compression.decode(
+                    block,
+                    expected_block_key=cache_key.hex(),
+                    expected_generation=0,
+                    expected_cache_group=self._cache_group,
+                    expected_shape=self.block_shape,
+                    expected_dtype=str(self.block_dtype),
+                    expected_layout=self.block_layout.name,
+                )
+                if len(raw) != mr.length:
+                    raise ValueError(
+                        f"restored block length {len(raw)} != "
+                        f"MR length {mr.length}"
+                    )
+                if trace is not None:
+                    with trace.observation():
+                        # Provenance: block came from this exact envelope.
+                        sizes = self._compression.encoded_sizes(
+                            block, envelope, trusted=True
+                        )
+                        dependency = (
+                            trace.event(
+                                EventType.CODEC_DECODE,
+                                cache_key,
+                                started,
+                                dependency,
+                                raw_bytes=len(raw),
+                                payload_bytes=sizes.payload,
+                                metadata_bytes=sizes.metadata,
+                                framing_bytes=sizes.framing,
+                                envelope_bytes=sizes.envelope,
+                                result="decoded",
+                                checksum_algorithm="sha256",
+                                checksum_after=block.metadata.checksum,
+                                cpu_process_start_ns=cpu_started,
+                                cpu_process_end_ns=time.process_time_ns(),
+                                **trace.resources(),
+                            ),
+                        )
+                        started = trace.now()
+                mr.fill(raw)
+                if trace is not None:
+                    with trace.observation():
+                        trace.event(
+                            EventType.KV_IMPORT,
+                            cache_key,
+                            started,
+                            dependency,
+                            phase="restore",
+                            raw_bytes=len(raw),
+                            result="restored",
+                            restore_result="restored",
+                        )
+            except Exception as exc:
+                if trace is not None:
+                    with trace.observation():
+                        trace.event(
+                            EventType.ERROR_RECOVERY,
+                            cache_key,
+                            started,
+                            dependency,
+                            result="rejected",
+                            restore_result="rejected",
+                            error_class=type(exc).__name__,
+                        )
+                return Status(StatusCodes.ERROR, value=exc)
 
         # Bypass token validation if MR is using compact layout
         if isinstance(mr, ManagedMemoryRegion) and not self._use_compact_layout:
@@ -791,6 +1177,9 @@ class L2Cache(MeasurableBase):
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
+        *,
+        trace_context: TraceContext | None = None,
+        trace_result: list[str] | None = None,
     ) -> Status[Sequence[MemoryRegion]]:
         """Acquire pinned memory regions that store the kv tensors.
         Args:
@@ -804,12 +1193,34 @@ class L2Cache(MeasurableBase):
 
         await self._ensure_mr_ops_worker()
 
+        trace = self._trace(trace_context, trace_result)
         mrs: List[MemoryRegion] = []
         for key_batch in self._cache_block_key_batches(prefix, query):
+            start = trace.clock() if trace else 0
+            trace_keys = [] if trace else None
             tasks = []
             async with asyncio.TaskGroup() as tg:
                 for _, key_str in key_batch:
+                    if trace_keys is not None:
+                        trace_keys.append(key_str)
                     tasks.append(tg.create_task(self._backend.acquire(key_str)))
+
+            if trace:
+                with trace.observation():
+                    for key, task in zip(trace_keys, tasks):
+                        status = task.result()
+                        trace.event(
+                            EventType.L2_GET,
+                            key,
+                            start,
+                            phase="zero_copy_acquire",
+                            source_tier="L2",
+                            result="loaded"
+                            if status.is_ok()
+                            else "not_found"
+                            if status.is_not_found()
+                            else "storage_error",
+                        )
 
             if len(tasks) == 0:
                 break
@@ -852,6 +1263,9 @@ class L2Cache(MeasurableBase):
                     )
                 break
 
+        if trace:
+            with trace.observation():
+                trace.finish()
         if len(mrs) == 0:
             return Status(StatusCodes.NOT_FOUND)
 

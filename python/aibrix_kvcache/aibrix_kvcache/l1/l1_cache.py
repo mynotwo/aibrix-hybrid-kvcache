@@ -186,6 +186,8 @@ class L1Cache(MeasurableBase):
         kv_tensors: torch.Tensor
         | Sequence[torch.Tensor]
         | Sequence[MemoryRegion],
+        *,
+        trace_context=None,
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
@@ -198,15 +200,21 @@ class L1Cache(MeasurableBase):
         if isinstance(kv_tensors, torch.Tensor) or isinstance(
             kv_tensors[0], torch.Tensor
         ):
-            return self._put_tensors_impl(prefix, query, kv_tensors)  # type: ignore[arg-type]
+            return self._put_tensors_impl(
+                prefix, query, kv_tensors, trace_context=trace_context
+            )  # type: ignore[arg-type]
         else:
-            return self._put_mrs_impl(prefix, query, kv_tensors)  # type: ignore[arg-type]
+            return self._put_mrs_impl(
+                prefix, query, kv_tensors, trace_context=trace_context
+            )  # type: ignore[arg-type]
 
     def _put_tensors_impl(
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         kv_tensors: torch.Tensor | Sequence[torch.Tensor],
+        *,
+        trace_context=None,
     ) -> Status[int]:
         """Put kv tensors to the cache.
         Args:
@@ -306,7 +314,11 @@ class L1Cache(MeasurableBase):
         )
 
         put_status = self._put_mrs_impl(
-            prefix, query, block_mrs, with_check=False
+            prefix,
+            query,
+            block_mrs,
+            with_check=False,
+            trace_context=trace_context,
         )
         if not put_status.is_ok():
             # failed to put all the blocks, release the allocated MRs
@@ -322,6 +334,8 @@ class L1Cache(MeasurableBase):
         query: KVCacheKeyTypes,
         kv_mrs: Sequence[MemoryRegion],
         with_check: bool = True,
+        *,
+        trace_context=None,
     ) -> Status[int]:
         """Put kv mrs to the cache.
         Args:
@@ -374,6 +388,9 @@ class L1Cache(MeasurableBase):
                     block_mr.pack_tokens(prefix=block_prefix, query=block_query)
                 block_mr.seal()
                 block_key = KVCacheKey(block_prefix, block_query)
+                # Bind scalar metadata to this allocation, before any policy
+                # callback can run under the same lock. Always clear old data.
+                block_mr._profiler_context = trace_context
                 if not self._eviction_policy.put(block_key, block_mr).is_ok():
                     break
                 bi += 1

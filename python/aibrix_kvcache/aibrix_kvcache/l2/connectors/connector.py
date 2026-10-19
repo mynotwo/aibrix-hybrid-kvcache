@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from abc import ABC, abstractmethod
 from concurrent.futures import Executor
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ class ConnectorFeature:
         gdr_put: Whether the kv cache connector supports GDR put.
         gdr_get: Whether the kv cache connector supports GDR get.
         zero_copy: Whether the kv cache connector supports zero copy.
+        variable_payload: Whether the connector can store and return byte
+            payloads whose length differs from the configured cache block.
     """
 
     mput_mget: bool = False
@@ -44,6 +47,7 @@ class ConnectorFeature:
     gdr_put: bool = False
     gdr_get: bool = False
     zero_copy: bool = False
+    variable_payload: bool = False
 
 
 @dataclass
@@ -106,6 +110,14 @@ class Connector(Generic[K, V]):
         if len(signatures) > 0:
             conn_id = f"{conn_id}_{signatures}"
 
+        expected_conn_id = os.getenv(
+            "AIBRIX_KV_CACHE_OL_EXPECTED_CONN_ID", ""
+        )
+        if expected_conn_id and expected_conn_id != conn_id:
+            raise ValueError(
+                "runtime connector ID does not match staged seed namespace"
+            )
+
         if backend_name == "ROCKSDB":
             from .rocksdb import RocksDBConnector
 
@@ -134,6 +146,10 @@ class Connector(Generic[K, V]):
             from .shfs import SHFSConnector
 
             return SHFSConnector.from_envs(conn_id, executor, **kwargs)
+        elif backend_name == "MEMORY":
+            from .memory import MemoryConnector
+
+            return MemoryConnector.from_envs(conn_id, executor, **kwargs)
         else:
             raise ValueError(f"Unknown connector type: {backend_name}")
 
@@ -205,6 +221,14 @@ class Connector(Generic[K, V]):
         Returns:
             The status of the put operation.
         """
+        raise NotImplementedError
+
+    async def get_bytes(self, key: K) -> Status[bytes]:
+        """Get a variable-length payload without a destination MR."""
+        raise NotImplementedError
+
+    async def put_bytes(self, key: K, payload: bytes) -> Status:
+        """Store a variable-length payload."""
         raise NotImplementedError
 
     def register_slabs(self, slabs: List[torch.Tensor]) -> Status:

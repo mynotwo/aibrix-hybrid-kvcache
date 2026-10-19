@@ -38,6 +38,7 @@ from aibrix_kvcache.common.absl_logging import (
     log_every_n_seconds,
     log_if,
 )
+from aibrix_kvcache.compression_profiler import EventType
 from aibrix_kvcache.profiling import tag_wrapper
 
 from .aibrix_offloading_connector_type1 import (
@@ -108,6 +109,11 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         self._allocated_kvcache_handles: dict[str, KVCacheHandle] = {}
         self._acquired_kvcache_handles: dict[str, KVCacheHandle] = {}
         self._send_lengths: dict[str, tuple[int, int]] = {}
+        self._import_spans: list[tuple] = []
+        self._export_spans: list[tuple] = []
+        self._save_contexts: dict = {}
+        self._load_contexts: dict = {}
+        self._export_dependencies: dict[str, list[str]] = {}
 
     def _get_block_layout(self) -> KVCacheBlockLayout:
         if (
@@ -129,11 +135,14 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         for seq_request_id in self._allocated_kvcache_handles:
             self._allocated_kvcache_handles[seq_request_id].release()
         self._allocated_kvcache_handles.clear()
+        self._save_contexts.clear()
+        self._export_dependencies.clear()
 
     def _release_acquired_kvcache_handles(self):
         for seq_request_id in self._acquired_kvcache_handles:
             self._acquired_kvcache_handles[seq_request_id].release()
         self._acquired_kvcache_handles.clear()
+        self._load_contexts.clear()
 
     @tag_wrapper(
         {
@@ -208,6 +217,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         seq_request_meta: AIBrixOffloadingConnectorRequestMetadata,
     ) -> int:
         logger.debug("_recv_kv_impl: %s", seq_request_meta)
+        trace_context = seq_request_meta.trace_context
         seq_request_id = seq_request_meta.req_id
         seq_cached_meta = self._meta_cache[seq_request_id]
         seq_all_tokens = seq_cached_meta.get_context_tokens_view()
@@ -255,7 +265,9 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         seq_recv_len = 0
 
         # get KV caches from offloading service
-        status = self.cache.acquire(prefix, tokens)
+        status = self.cache.acquire(
+            prefix, tokens, trace_context=trace_context
+        )
 
         if not status.is_ok():
             if not status.is_not_found():
@@ -276,6 +288,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
 
         num_fetched_tokens, handle = status.value
         self._acquired_kvcache_handles[seq_request_id] = handle
+        self._load_contexts[seq_request_id] = trace_context
 
         # update recv_len
         seq_recv_len += num_fetched_tokens - shift_len
@@ -308,6 +321,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         lid = self.layer_name_idx_mapping[layer_name]
         layer_tensors: list[torch.Tensor] = []
         slot_mapping_offset = 0
+        pending_spans = []
 
         for seq_request_id in self._acquired_kvcache_handles:
             if self._acquired_kvcache_handles[seq_request_id] is None:
@@ -335,28 +349,50 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             slot_mapping_offset += length
             # We are using LCND layout, so the tensors can be split by layers
             layer_tensors.extend([t[lid : lid + 1] for t in kv_blocks])
+            span = self.cache.trace_start(
+                self._load_contexts[seq_request_id],
+                dependencies=getattr(handle, "_profiler_dependencies", ()),
+            )
+            if span[0] is not None:
+                pending_spans.append(
+                    (span, self.layer_ids[lid], length)
+                )
 
         if slot_mapping_offset == 0:
             return
 
-        with torch.cuda.stream(self._recv_stream):
-            reshape_and_cache_multi_layer(
-                layer_tensors,
-                [self.layers_kv_caches[lid]],  # type: ignore[index]
-                self._recv_slot_mapping[:slot_mapping_offset],
-                self.engine_block_ntokens,
-                "auto",
-                [self.k_scales[lid]],  # type: ignore[index]
-                [self.v_scales[lid]],  # type: ignore[index]
-                self.block_layout.name,
-                self.kv_layout_blocks_first,
+        try:
+            with torch.cuda.stream(self._recv_stream):
+                reshape_and_cache_multi_layer(
+                    layer_tensors,
+                    [self.layers_kv_caches[lid]],  # type: ignore[index]
+                    self._recv_slot_mapping[:slot_mapping_offset],
+                    self.engine_block_ntokens,
+                    "auto",
+                    [self.k_scales[lid]],  # type: ignore[index]
+                    [self.v_scales[lid]],  # type: ignore[index]
+                    self.block_layout.name,
+                    self.kv_layout_blocks_first,
+                )
+        except Exception as error:
+            self._finish_layer_spans(
+                pending_spans, EventType.KV_IMPORT, error, rejected=True
             )
+            raise
+        self._import_spans.extend(pending_spans)
 
     def wait_for_layer_load(
         self, metadata: AIBrixOffloadingConnectorMetadata, layer_name: str
     ) -> None:
         # wait until kv layer is loaded
-        self._recv_stream.synchronize()
+        try:
+            self._recv_stream.synchronize()
+        except Exception as error:
+            self._finish_layer_spans(
+                self._import_spans, EventType.KV_IMPORT, error
+            )
+            raise
+        self._finish_layer_spans(self._import_spans, EventType.KV_IMPORT)
         curr_layer_idx = self.layer_name_idx_mapping[layer_name]
         if curr_layer_idx == self.num_layers - 1:
             # release acquired handles once we finished onloading the last
@@ -367,6 +403,29 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             next_layer_idx = curr_layer_idx + 1
             next_layer = list(self.no_compile_layers.keys())[next_layer_idx]
             self._start_load_kv(metadata, next_layer)
+
+    def _finish_layer_spans(self, spans, kind, error=None, *, rejected=False):
+        for span, layer, length in spans:
+            self.cache.trace_finish(
+                span,
+                kind,
+                phase=(
+                    "connector_layer_submit"
+                    if rejected else "connector_layer_wait"
+                ),
+                layer=layer,
+                layer_observed=True,
+                token_count=length,
+                result="copied" if error is None else "error",
+                error_class=type(error).__name__ if error is not None else "",
+                restore_result=(
+                    "rejected" if rejected
+                    else "restored" if error is None else "failed"
+                )
+                if kind == EventType.KV_IMPORT
+                else "",
+            )
+        spans.clear()
 
     def save_kv_layer(
         self,
@@ -379,6 +438,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         lid = self.layer_name_idx_mapping[layer_name]
         layer_tensors: list[torch.Tensor] = []
         slot_mapping_offset = 0
+        pending_spans = []
 
         if is_first_layer:
             for seq_req_id in self._send_lengths:
@@ -393,6 +453,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 if handle is None:
                     continue
                 self._allocated_kvcache_handles[seq_req_id] = handle
+                self._save_contexts[seq_req_id] = seq_request_meta.trace_context
 
         for seq_req_id, _ in self._allocated_kvcache_handles.items():
             if (
@@ -426,26 +487,42 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
             layer_tensors.extend(
                 [t[lid : lid + 1] for t in seq_allocated_tensors]
             )
+            span = self.cache.trace_start(self._save_contexts[seq_req_id])
+            if span[0] is not None:
+                pending_spans.append(
+                    (span, self.layer_ids[lid], seq_num_tokens)
+                )
 
         if slot_mapping_offset == 0:
             return
 
-        # wait for compute on current stream
-        curr_stream = torch.cuda.current_stream()
-        self._send_stream.wait_stream(curr_stream)
+        try:
+            # wait for compute on current stream
+            curr_stream = torch.cuda.current_stream()
+            self._send_stream.wait_stream(curr_stream)
 
-        # use send stream to carry out async copy from HBM to DRAM
-        with torch.cuda.stream(self._send_stream):
-            reshape_and_offload_multi_layer(
-                layer_tensors,
-                [kv_layer],
-                self._send_slot_mapping[:slot_mapping_offset],
-                self.engine_block_ntokens,
-                "auto",
-                [self.k_scales[lid]],  # type: ignore[index]
-                [self.v_scales[lid]],  # type: ignore[index]
-                self.block_layout.name,
-                self.kv_layout_blocks_first,
+            # use send stream to carry out async copy from HBM to DRAM
+            with torch.cuda.stream(self._send_stream):
+                reshape_and_offload_multi_layer(
+                    layer_tensors,
+                    [kv_layer],
+                    self._send_slot_mapping[:slot_mapping_offset],
+                    self.engine_block_ntokens,
+                    "auto",
+                    [self.k_scales[lid]],  # type: ignore[index]
+                    [self.v_scales[lid]],  # type: ignore[index]
+                    self.block_layout.name,
+                    self.kv_layout_blocks_first,
+                )
+        except Exception as error:
+            self._finish_layer_spans(
+                pending_spans, EventType.KV_EXPORT, error, rejected=True
+            )
+            raise
+        self._export_spans.extend(pending_spans)
+        for span, _, _ in pending_spans:
+            self._export_dependencies.setdefault(span[0].request_id, []).append(
+                span[0].operation_id
             )
 
     def _allocate_for_request(
@@ -498,7 +575,14 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         metadata: AIBrixOffloadingConnectorMetadata,
     ) -> None:
         # wait for send stream to finish
-        self._send_stream.synchronize()
+        try:
+            self._send_stream.synchronize()
+        except Exception as error:
+            self._finish_layer_spans(
+                self._export_spans, EventType.KV_EXPORT, error
+            )
+            raise
+        self._finish_layer_spans(self._export_spans, EventType.KV_EXPORT)
 
         for seq_request_id in self._send_lengths:
             seq_context_len, seq_query_len = self._send_lengths[seq_request_id]
@@ -571,7 +655,15 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         length = aligned_query_len
 
         # put KV caches to offloading service
-        status = self.cache.put(prefix, tokens, seq_allocated_handle)
+        status = self.cache.put(
+            prefix,
+            tokens,
+            seq_allocated_handle,
+            trace_context=self._save_contexts.get(seq_request_id),
+            trace_dependencies=self._export_dependencies.get(
+                seq_request_id, ()
+            ),
+        )
         if not status.is_ok():
             log_every_n_seconds(
                 logger,

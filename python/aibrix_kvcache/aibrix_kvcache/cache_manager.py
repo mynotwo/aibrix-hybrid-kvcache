@@ -17,6 +17,8 @@ import contextlib
 import functools
 import logging
 import threading
+import time
+import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import Executor, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -40,9 +42,17 @@ from .cache_hashable import (
     TokenListView,
 )
 from .common.absl_logging import getLogger, log_every_n_seconds, log_if
+from .compression_profiler import (
+    EventType,
+    ProfileMode,
+    TraceContext,
+    TraceEvent,
+)
+from .compression_profiler.recorder import NullRecorder, ShardedRingRecorder
 from .config import KVCacheConfig
 from .l1 import L1Cache
 from .l2 import KeyBuilder, L2Cache
+from .l2.l2_cache import _profiler_config
 from .memory import ManagedMemoryRegion, MemoryRegion, TensorPoolAllocator
 from .meta_service import MetaService
 from .metrics import KVCacheMetrics, MeasurableBase, MetricRecorder
@@ -766,7 +776,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if enable_l2:
             backend_name: str = envs.AIBRIX_KV_CACHE_OL_L2_CACHE_BACKEND
             namespace: str = envs.AIBRIX_KV_CACHE_OL_L2_CACHE_NAMESPACE
-            # compression: str = envs.AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION
+            compression: str = envs.AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION
             ingestion_type: str = (
                 envs.AIBRIX_KV_CACHE_OL_L2_CACHE_INGESTION_TYPE
             )
@@ -795,6 +805,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 metrics=self._metrics.l2,
                 meta_service=self._ms,
                 key_builder=key_builder,
+                compression=compression,
             )
 
             # new an event loop to carry out L2Cache ops
@@ -840,6 +851,102 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         )
 
         logger.info("%s is initialized", self)
+
+        # L2 owns its recorder; L1-only managers own one for lifecycle events.
+        self._lifecycle_recorder = NullRecorder()
+        if self._l2_cache is None:
+            mode, capacity, output, _ = _profiler_config()
+            if mode != ProfileMode.OFF:
+                self._lifecycle_recorder = ShardedRingRecorder(
+                    capacity=capacity, output=output
+                )
+
+    def _trace_recorder(self):
+        if self._l2_cache is not None:
+            return self._l2_cache._profiler_recorder
+        return self._lifecycle_recorder
+
+    def trace_start(self, context: TraceContext | None, *, dependencies=()):
+        """Capture immutable submission identity and host time, fail open."""
+        if context is None or context.mode == ProfileMode.OFF:
+            return None, None
+        try:
+            if isinstance(self._trace_recorder(), NullRecorder):
+                return None, None
+            return context.child(
+                uuid.uuid4().hex, dependencies=dependencies
+            ), time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW)
+        except Exception:
+            self._trace_invalid()
+            return None, None
+
+    def _trace_invalid(self):
+        with contextlib.suppress(Exception):
+            self._trace_recorder().invalidate("observation_error")
+
+    def trace_finish(
+        self, span, kind: EventType, *, dependencies=None, **values
+    ):
+        context, start = span
+        if context is None or context.mode == ProfileMode.OFF:
+            return
+        try:
+            recorder = self._trace_recorder()
+            if isinstance(recorder, NullRecorder):
+                return
+            record = dict(
+                experiment_id=context.experiment_id,
+                run_id=context.run_id,
+                request_id=context.request_id,
+                operation_id=context.operation_id,
+                parent_operation_id=context.parent_operation_id,
+                dependency_ids=context.dependency_ids
+                if dependencies is None else tuple(dependencies),
+                event_type=kind,
+                start_ns=start,
+                end_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW),
+                **values,
+            )
+            if not recorder.record(lambda: TraceEvent(**record)):
+                self._trace_invalid()
+            else:
+                return context.operation_id
+        except Exception:
+            self._trace_invalid()
+
+    def _trace_acquired(self, span, status, requested, fetched, completed=None):
+        operation = self.trace_finish(
+            span,
+            EventType.REQUEST,
+            dependencies=completed,
+            phase="cache_acquire",
+            result="hit"
+            if status.is_ok()
+            else "miss"
+            if status.is_not_found()
+            else "error",
+            token_count=fetched,
+        )
+        if fetched < requested and operation is not None:
+            self.trace_finish(
+                self.trace_start(span[0]),
+                EventType.FALLBACK,
+                phase="cache_acquire",
+                result="cache_unavailable",
+                restore_result="not_restored",
+                token_count=requested - fetched,
+            )
+        return operation
+
+    def _trace_read_result(self, handle, completed, operation):
+        if completed is not None:
+            try:
+                # Each acquire returns a fresh handle, even for shared L1 MRs.
+                handle._profiler_dependencies = (
+                    (operation,) if operation is not None else ()
+                )
+            except Exception:
+                self._trace_invalid()
 
     @functools.cached_property
     def feature(self) -> KVCacheFeature:
@@ -909,6 +1016,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if self._l2_cache is not None:
             self._l2_cache.close()
             del self._l2_cache
+        self._lifecycle_recorder.close()
 
     def _l2_cache_has_zero_copy(self) -> bool:
         return self._l2_cache is not None and self._l2_cache.feature.zero_copy
@@ -926,13 +1034,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             The status of the ingestion operation and the number of tokens have
             been ingested or scheduled.
         """
-        return self._l2_put(key.prefix, key.query, mr)
+        return self._l2_put(
+            key.prefix,
+            key.query,
+            mr,
+            trace_context=getattr(mr, "_profiler_context", None),
+        )
 
     def _l2_put(
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         value: MemoryRegion | KVCacheHandle,
+        *,
+        trace_context: TraceContext | None = None,
     ) -> Status:
         """Put the kv tensors to the L2Cache.
         Args:
@@ -948,10 +1063,14 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         status = None
         if self._l2_inflight_quota == 0:
             # sync write
-            status = self._l2_put_sync(prefix, query, value)
+            status = self._l2_put_sync(
+                prefix, query, value, trace_context=trace_context
+            )
         else:
             # async write
-            status = self._l2_put_async(prefix, query, value)
+            status = self._l2_put_async(
+                prefix, query, value, trace_context=trace_context
+            )
 
         return status
 
@@ -960,6 +1079,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         value: (MemoryRegion | KVCacheHandle),
+        *,
+        trace_context: TraceContext | None = None,
     ) -> Status:
         """Put the kv tensors to the L2Cache asynchrously.
         Args:
@@ -1016,7 +1137,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         # Async write to L2Cache
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.put(prefix, query, value), self._event_loop
+            self._l2_cache.put(
+                prefix, query, value, trace_context=trace_context
+            ),
+            self._event_loop,
         )
         future.add_done_callback(functools.partial(_done_callback, value=value))
         return Status.ok(len(query))
@@ -1026,6 +1150,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         value: (MemoryRegion | KVCacheHandle),
+        *,
+        trace_context: TraceContext | None = None,
     ) -> Status:
         """Put the kv tensors to the L2Cache blockingly.
         Args:
@@ -1039,7 +1165,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         assert self._l2_cache is not None, "l2_cache is not initialized."
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.put(prefix, query, value), self._event_loop
+            self._l2_cache.put(
+                prefix, query, value, trace_context=trace_context
+            ),
+            self._event_loop,
         )
         # wait until the write is done
         status = future.result()
@@ -1076,6 +1205,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
     @nvtx_range("acquire", "KVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(self, *args, **kwargs) -> Status[Tuple[int, KVCacheHandle]]:
+        context = kwargs.pop("trace_context", None)
+        span = self.trace_start(context)
+        completed = [] if span[0] is not None else None
         prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
 
         if not isinstance(query, TokenListView):
@@ -1084,25 +1216,32 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 f"of cache key's block_ntokens ({query.block_ntokens})"
             )
 
-        status = self._acquire_impl(prefix, query)
+        status = self._acquire_impl(
+            prefix, query,
+            trace_context=context if span[0] is not None else None,
+            trace_result=completed,
+        )
+        operation = self._trace_acquired(
+            span,
+            status,
+            len(query),
+            len(status.get()) * self.block_ntokens if status.is_ok() else 0,
+            completed,
+        )
         if not status.is_ok():
             return Status(status)
 
         value = status.get()
-        return Status.ok(
-            (
-                len(value) * self.block_ntokens,
-                MemoryRegionKVCacheHandle(
-                    self.block_dtype,
-                    self.block_shape,
-                    value,  # type: ignore
-                ),
-            )
+        handle = MemoryRegionKVCacheHandle(
+            self.block_dtype, self.block_shape, value  # type: ignore
         )
+        self._trace_read_result(handle, completed, operation)
+        return Status.ok((len(value) * self.block_ntokens, handle))
 
     @nvtx_range("get", "KVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.GET)
     def get(self, *args, **kwargs) -> Status[int]:
+        trace_context = kwargs.pop("trace_context", None)
         prefix, query, kv_tensors = parse_kvcache_api_args(*args, **kwargs)
 
         if not isinstance(query, TokenListView):
@@ -1114,13 +1253,15 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if isinstance(kv_tensors, GDRKVCacheHandle):
             assert self.feature.gdr_get, "Does not support GDR get"
         mrs = kv_tensors.memory_regions
-        return self._get_impl(prefix, query, mrs)
+        return self._get_impl(prefix, query, mrs, trace_context=trace_context)
 
     def _get_impl(
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
         mrs: Sequence[MemoryRegion] | Sequence[Sequence[MemoryRegion]],
+        *,
+        trace_context: TraceContext | None = None,
     ) -> Status[int]:
         """Get the kv tensors for the given prefix and query tokens.
 
@@ -1131,7 +1272,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         Returns:
             Number of tokens have been fetched from the kv cache service.
         """
-        status = self._acquire_impl(prefix, query, mrs)
+        status = self._acquire_impl(
+            prefix, query, mrs, trace_context=trace_context
+        )
         if not status.is_ok():
             return Status(status)
         return Status.ok(len(status.get()) * self.block_ntokens)
@@ -1241,6 +1384,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         output_mrs: Sequence[MemoryRegion]
         | Sequence[Sequence[MemoryRegion]]
         | None = None,
+        *,
+        trace_context: TraceContext | None = None,
+        trace_result: list[str] | None = None,
     ) -> (
         Status[Sequence[MemoryRegion]]
         | Status[Sequence[Sequence[MemoryRegion]]]
@@ -1270,7 +1416,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         # Bypass L1 if L2 cache is enabled with zero copy
         if output_mrs is None and self._l2_cache_has_zero_copy():
-            return self._l2_acquire_impl(prefix, query)
+            return self._l2_acquire_impl(
+                prefix, query, trace_context=trace_context,
+                trace_result=trace_result,
+            )
 
         fetched_mrs: List[MemoryRegion] = []
         num_fetched_blocks = 0
@@ -1330,7 +1479,11 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.get(prefix_curr, tokens_curr, mrs), self._event_loop
+            self._l2_cache.get(
+                prefix_curr, tokens_curr, mrs, trace_context=trace_context,
+                trace_result=trace_result,
+            ),
+            self._event_loop,
         )
         try:
             get_status = future.result(timeout=timeout_s)
@@ -1352,7 +1505,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                         mr.ref_up()
                     mrs_to_release = l2_fetched_mrs
                     put_status = self._l1_cache.put(
-                        prefix_curr, put_tokens_curr, l2_fetched_mrs
+                        prefix_curr,
+                        put_tokens_curr,
+                        l2_fetched_mrs,
+                        trace_context=trace_context,
                     )
                     if put_status.is_ok():
                         mrs_to_release = l2_fetched_mrs[put_status.get() :]
@@ -1363,7 +1519,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                         for mr in l2_fetched_mrs
                     ]
                     self._l1_cache.put(
-                        prefix_curr, put_tokens_curr, put_tensors
+                        prefix_curr,
+                        put_tokens_curr,
+                        put_tensors,
+                        trace_context=trace_context,
                     )
 
             if output_mrs is None:
@@ -1401,6 +1560,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
+        *,
+        trace_context: TraceContext | None = None,
+        trace_result: list[str] | None = None,
     ) -> (
         Status[Sequence[MemoryRegion]]
         | Status[Sequence[Sequence[MemoryRegion]]]
@@ -1420,7 +1582,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             * self._l2_cache_per_token_timeout_ms
         ) / 1000
         future = asyncio.run_coroutine_threadsafe(
-            self._l2_cache.acquire(prefix, query),  # type: ignore
+            self._l2_cache.acquire(  # type: ignore
+                prefix, query, trace_context=trace_context,
+                trace_result=trace_result,
+            ),
             self._event_loop,  # type: ignore
         )
         try:
@@ -1547,6 +1712,20 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
     @nvtx_range("put", "KVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.PUT)
     def put(self, *args, **kwargs) -> Status[int]:
+        span = self.trace_start(
+            kwargs.pop("trace_context", None),
+            dependencies=kwargs.pop("trace_dependencies", ()),
+        )
+        status = self._put_impl(*args, trace_context=span[0], **kwargs)
+        self.trace_finish(
+            span,
+            EventType.REQUEST,
+            phase="cache_put",
+            result="accepted" if status.is_ok() else "error",
+        )
+        return status
+
+    def _put_impl(self, *args, trace_context=None, **kwargs) -> Status[int]:
         prefix, query, kv_tensors = parse_kvcache_api_args(*args, **kwargs)
 
         if not isinstance(query, TokenListView):
@@ -1588,7 +1767,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         # Bypass L1 if L2 cache is enabled with zero copy
         if self._l2_cache_has_zero_copy():
-            return self._l2_put(prefix, query, kv_tensors)
+            return self._l2_put(
+                prefix, query, kv_tensors, trace_context=trace_context
+            )
 
         # If L1Cache is enabled, we put kv tensors to L1Cache and leverage its
         # eviction policy to asynchronously ingest kv tensors to L2Cache.
@@ -1596,7 +1777,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         if self._l1_cache is not None:
             if kv_tensors.memory_region_type is ManagedMemoryRegion:
                 mrs = kv_tensors.memory_regions
-                status = self._l1_cache.put(prefix, query, mrs)
+                status = self._l1_cache.put(
+                    prefix, query, mrs, trace_context=trace_context
+                )
                 # release mrs that are not put to L1Cache
                 self._release(mrs[status.get() :])
             else:
@@ -1604,14 +1787,18 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 # it to tensors in order to trigger underlying data copy to
                 # ensure L1Cache does not own any external MRs
                 tensors = kv_tensors.to_tensors()
-                status = self._l1_cache.put(prefix, query, tensors)
+                status = self._l1_cache.put(
+                    prefix, query, tensors, trace_context=trace_context
+                )
                 kv_tensors.release()
 
             if not status.is_ok():
                 return status
             return Status.ok(status.get() * self.block_ntokens)
         else:
-            return self._l2_put(prefix, query, kv_tensors)
+            return self._l2_put(
+                prefix, query, kv_tensors, trace_context=trace_context
+            )
 
     @nvtx_range("delete", "KVCacheManager")
     def delete(self, *args, **kwargs) -> Status:
@@ -1742,21 +1929,36 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
     @nvtx_range("acquire", "GroupAwareKVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.ACQUIRE)
     def acquire(self, *args, **kwargs) -> Status[Tuple[int, KVCacheHandle]]:
+        context = kwargs.pop("trace_context", None)
+        span = self.trace_start(context)
+        completed = [] if span[0] is not None else None
         prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
 
-        status = self._group_aware_acquire_impl(prefix, query)
+        status = self._group_aware_acquire_impl(
+            prefix, query,
+            trace_context=context if span[0] is not None else None,
+            trace_result=completed,
+        )
+        operation = self._trace_acquired(
+            span, status, len(query), status.get()[0] if status.is_ok() else 0,
+            completed,
+        )
         if not status.is_ok():
             return Status(status)
         value = status.get()
         handle = MemoryRegionKVCacheHandle(
             self.block_dtype, self.block_shape, value[1]
         )
+        self._trace_read_result(handle, completed, operation)
         return Status.ok((value[0], handle))
 
     def _group_aware_acquire_impl(
         self,
         prefix: KVCacheKeyTypes | None,
         query: KVCacheKeyTypes,
+        *,
+        trace_context: TraceContext | None = None,
+        trace_result: list[str] | None = None,
     ) -> Status[Tuple[int, Sequence[MemoryRegion]]]:
         """Get kv tensors / cache handles.
 
@@ -1782,7 +1984,10 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
             if next_tokens and len(next_tokens) >= 0:
                 # prefetch
                 super().prefetch(chunk_prefix + chunk_tokens, next_tokens)
-            status = super()._acquire_impl(chunk_prefix, chunk_tokens)
+            status = super()._acquire_impl(
+                chunk_prefix, chunk_tokens, trace_context=trace_context,
+                trace_result=trace_result,
+            )
             value = status.get()
             # we only care about num of blocks or if it is an error
             if status.is_ok():
@@ -1829,6 +2034,7 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
     @nvtx_range("get", "GroupAwareKVCacheManager")
     @MeasurableBase.measure(MetricRecorder.OP.GET)
     def get(self, *args, **kwargs) -> Status[int]:
+        trace_context = kwargs.pop("trace_context", None)
         prefix, query, kv_tensors = parse_kvcache_api_args(*args, **kwargs)
 
         if isinstance(kv_tensors, GDRKVCacheHandle):
@@ -1850,7 +2056,12 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 chunk_mrs_start + len(chunk_tokens) // self.block_ntokens
             )
             chunk_mrs = mrs[chunk_mrs_start:chunk_mrs_end]
-            status = super()._get_impl(chunk_prefix, chunk_tokens, chunk_mrs)
+            status = super()._get_impl(
+                chunk_prefix,
+                chunk_tokens,
+                chunk_mrs,
+                trace_context=trace_context,
+            )
             # check if all participants have the same status
             if status.is_ok():
                 self._coll_tensor[0] = status.get()
