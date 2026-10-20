@@ -4,9 +4,12 @@ Per length, PAIRS unique prompts of exactly that many tokens. Each is sent
 cold (recomputed, and its record saved), then after SETTLE seconds both
 as a local prefix hit and, after resetting vLLM's prefix cache, as an
 external restore; the two alternate in order (ABBA) across pairs.
+The first pair is also the acceptance probe: its requests are named
+bisect-{cold,local_hit,external} and its tokens go to s2-bisect.json.
 
 Usage: python3 ttft_lengths.py PORT RUN_DIR PAIRS LEN [LEN ...]
-Writes RUN_DIR/ttft.jsonl and, last on stdout, one JSON line of medians.
+Writes RUN_DIR/ttft.jsonl, RUN_DIR/s2-bisect.json and, last on stdout,
+one JSON line of medians.
 """
 
 import json
@@ -79,7 +82,13 @@ def main(port, run_dir, pairs, *lengths):
         for i in range(int(pairs)):
             ids = prompt_ids(base, rng, length, i)
             row = {"length": length, "pair": i}
-            row["cold"] = ttft(base, ids, f"cold-{length}-{i}")
+            probe = not rows
+
+            def name(arm):
+                tag = "local_hit" if arm == "local" else arm
+                return f"bisect-{tag}" if probe else f"{arm}-{length}-{i}"
+
+            row["cold"] = ttft(base, ids, name("cold"))
             time.sleep(SETTLE)
             order = ("local", "external") if i % 2 == 0 else (
                 "external", "local")
@@ -87,13 +96,21 @@ def main(port, run_dir, pairs, *lengths):
                 if arm == "external":
                     post(base, "/reset_prefix_cache")
                     time.sleep(0.2)
-                row[arm] = ttft(base, ids, f"{arm}-{length}-{i}")
+                row[arm] = ttft(base, ids, name(arm))
             rows.append(row)
             print(length, i, *(round(row[a]["ttft_s"] * 1000, 1)
                                for a in ("cold", "local", "external")),
                   flush=True)
     with open(f"{run_dir}/ttft.jsonl", "w") as f:
         f.writelines(json.dumps(row) + "\n" for row in rows)
+    first = rows[0]
+    with open(f"{run_dir}/s2-bisect.json", "w") as f:
+        json.dump({
+            "prompt_tokens": first["length"],
+            "cold": first["cold"]["tokens"],
+            "local_hit": first["local"]["tokens"],
+            "external": first["external"]["tokens"],
+        }, f)
     summary = {
         length: {
             f"{arm}_ttft_ms": round(1000 * statistics.median(
