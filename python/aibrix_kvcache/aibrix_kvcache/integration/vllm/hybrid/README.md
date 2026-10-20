@@ -1,37 +1,35 @@
 # Hybrid KV cache offloading for vLLM
 
 `AIBrixHybridOffloadingConnector` saves and restores prefix caches of hybrid
-models, Mamba (linear attention) layers plus full attention layers such as
-Qwen3-Next, through AIBrix L2 backends, on unmodified vLLM >= 0.30.
+models that combine recurrent state with full-attention layers, through
+AIBrix L2 backends using the external connector API targeted at vLLM 0.30.0.
+Other runtime versions and model layouts are not certified.
 
 A record is the Mamba state at an aligned boundary plus the attention
 blocks before it. A request whose prefix is no longer in the GPU prefix
 cache gets it restored instead of recomputed.
 
-## What it saves
+## Evidence boundary
 
-Qwen3-Next (80B, TP8, H800), MEMORY backend, `--numa-bind`. Median of 6
-prompts per length; the restore window runs from the first record read to
-the last block written, over all 8 ranks.
+This is an experimental integration, not a validated model-support claim.
+Constructed-tensor CPU and H800/CUDA tests pass, including ANS bytewise
+round trips and corruption checks. Whole-model acceptance remains unresolved:
+the historical run used for the 256K observation reports FAIL (missing
+per-rank verification and generated-token mismatch). The cause of the
+output difference has not been established. See the
+[verification record](../../../../tools/qwen_next_hybrid/VERIFICATION.md).
 
-| Prompt | Recompute TTFT | Restore TTFT (ANS) | Restore window IDENTITY / ANS |
-|---|---|---|---|
-| 8K | 0.21 s | 0.15 s | 6.3 / 6.2 ms |
-| 32K | 0.91 s | 0.19 s | 13.8 / 12.0 ms |
-| 64K | 1.9 s | 0.24 s | 23.5 / 18.9 ms |
-| 128K | 5.0–6.0 s | 0.29 s | 43.8 / 34.5 ms |
-| 192K | 8.6–10.9 s | 0.36 s | 63.9 / 49.4 ms |
-| 256K | 11–15 s | 0.44 s | 84 / 64 ms |
+## Performance interpretation
 
-- The 8K–64K TTFTs come from an earlier build whose restore windows were
-  1.4–2.5x longer. The windows in this table are from the current code.
-- Each rank holds about 12 KB of record per token: 1.6 GB at 128K and
-  3.2 GB at 256K.
-- The restore window grows linearly with the prompt. Above 32K it is
-  bound by PCIe host-to-device bandwidth (47–55 GB/s per GPU with all 8
-  copying).
-- ANS cuts the bytes crossing PCIe by 1.34x, so its window is 24% shorter
-  at 256K.
+Historical development runs motivated this implementation, but mixed source
+versions and incomplete whole-model acceptance prevent a release performance
+claim. No speedup guarantee is attached to this source snapshot. Use the
+benchmark below to collect matched-version evidence for your environment.
+
+Compare recomputation, IDENTITY restore and ANS restore separately. External
+reuse can avoid prefill work; compression can reduce stored/transferred bytes.
+A shorter restore window alone does not establish lower end-to-end TTFT.
+See the [technical note](../../../../tools/qwen_next_hybrid/TECHNICAL_NOTE.md).
 
 ## Configuration
 
@@ -56,20 +54,22 @@ Codecs:
 
 - `ANS` runs nvCOMP on the GPU and needs `nvidia-nvcomp-cu13`. Records are
   encoded in 64 MB frames, so the scratch memory stays bounded.
-- `IDENTITY` stores the raw bytes. A CPU codec (zstd) is not offered: it
-  made every restore slower at every length.
+- `IDENTITY` stores the raw bytes. CPU zstd belongs to the general L2
+  compression adapter and is not offered in this hybrid path.
 
 Deployment:
 
-- Pass `--numa-bind` to vLLM, and `--cap-add=SYS_NICE` to its container.
-  This keeps each worker's host memory on its GPU's NUMA node. Without it,
-  the slowest GPU's host-to-device copy halves (23 vs 47 GB/s).
-- MEMORY capacity per rank: about 12 KB × tokens × records to keep, set
-  through `AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES`.
+- The development launcher uses `--numa-bind` and container `SYS_NICE` so
+  worker host memory can follow each GPU's NUMA node. Validate the effect
+  on your topology rather than assuming a fixed bandwidth improvement.
+- Set per-rank MEMORY capacity through
+  `AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES`; budget from the actual record
+  sizes and number of retained prefixes for your layout.
 
 ## Failure behaviour
 
-A record that fails is recomputed. A failure never costs the engine:
+The connector requests recomputation when record restore fails. The tested
+record-level cases below do not prove engine recovery from every failure:
 
 - A save that cannot get GPU or host memory, or that the backend refuses,
   is skipped.
@@ -88,21 +88,22 @@ A record that fails is recomputed. A failure never costs the engine:
   400 tokens for Qwen3-Next) stores no record. vLLM does not offer that
   boundary to the connector.
 - A restored request and a local prefix hit may decode different tokens.
-  This is vLLM's numerical nondeterminism, which shows up between any two
-  prefill paths.
-- Saves cost host CPU: per 1.6 GB record, about 0.5 s with ANS and 0.7 s
-  with IDENTITY, off the worker thread.
-- Once, in one 256K IDENTITY run, a save stalled in host memory allocation
-  and pinning for 25 minutes. The cause is unknown and it did not recur.
-  Saves are now dropped rather than waited for, so such a stall no longer
-  takes the engine down.
+  The cause has not been established; numerical differences and connector
+  correctness both need investigation. This blocks an output-equivalence claim.
+- Background saves still consume host memory, CPU and copy bandwidth. A
+  historical run stalled during host allocation/pinning; its cause remains
+  unknown. Dropping busy saves limits queueing but does not establish that
+  all resource-pressure failures preserve engine responsiveness.
 
 ## Benchmark
 
 `tools/qwen_next_hybrid/bench.sh` serves each arm, times TTFT by prompt
 length (`ttft_lengths.py`), then checks the profiler trace
 (`tools/qwen_next_acceptance.py`) and breaks restores into stages
-(`tools/compression_impact_analyze.py`):
+(`tools/compression_impact_analyze.py`). Connector arms enable local-hit
+verification. This diagnostic mode is for acceptance evidence; use a separate
+matched experiment to measure production-mode overhead. The strict gate can
+fail on unresolved whole-model differences and returns nonzero in that case:
 
 ```
 MODEL=/models/Qwen3-Next SRC=$PWD/python/aibrix_kvcache DEPS=/path/to/nvcomp \

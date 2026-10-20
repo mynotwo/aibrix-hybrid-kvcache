@@ -1,4 +1,66 @@
-# AIBrix
+# AIBrix Hybrid KV Cache
+
+Experimental hybrid-model prefix-cache offloading and compression profiling,
+built on [AIBrix](https://github.com/vllm-project/aibrix). A saved prefix combines
+recurrent state at an aligned boundary with its full-attention spans, so an
+external cache can restore both kinds of state together.
+
+> **Experimental research integration.** This is an independent downstream
+> project, not an official AIBrix release. Tensor-level CPU/CUDA round trips
+> pass; whole-model output equivalence is unresolved. Do not treat the included
+> historical latency observations as a validated performance guarantee.
+
+## Explore
+
+- [Connector guide](python/aibrix_kvcache/aibrix_kvcache/integration/vllm/hybrid/README.md):
+  configuration, failure behavior, limitations and benchmark commands.
+- [Technical note](python/aibrix_kvcache/tools/qwen_next_hybrid/TECHNICAL_NOTE.md):
+  architecture, what compression can improve, and evidence boundaries.
+- [Verification record](python/aibrix_kvcache/tools/qwen_next_hybrid/VERIFICATION.md):
+  exact source version, environments, test commands and unresolved acceptance.
+
+The implementation lives under `python/aibrix_kvcache`: `compression` provides
+lossless envelopes, `compression_profiler` records causal stages and byte
+accounting, and `integration/vllm/hybrid` implements the external connector.
+
+## Run the CPU checks
+
+Use Python 3.11 or 3.12 and the package's existing dependencies:
+
+```bash
+git clone https://github.com/mynotwo/aibrix-hybrid-kvcache.git
+cd aibrix-hybrid-kvcache
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install -r python/aibrix_kvcache/requirements/core.txt \
+  pytest pytest-asyncio pytest-mock
+PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
+  python/aibrix_kvcache/tests/test_hybrid_layout.py \
+  python/aibrix_kvcache/tests/test_hybrid_logic.py \
+  python/aibrix_kvcache/tests/test_hybrid_store.py \
+  python/aibrix_kvcache/tests/test_hybrid_gpu_codec.py
+```
+
+CUDA/nvCOMP tests skip when their hardware or optional dependency is absent.
+These tests use constructed tensors; they do not establish model compatibility.
+The current CUDA checks run with vLLM 0.30.0, Torch 2.13.0+cu130 and CUDA 13.0.
+Other versions require independent verification; `>=0.30` is not a support promise.
+
+## Contribute
+
+Start with an issue that includes the source commit, runtime/model revisions,
+hardware, configuration, and a minimal reproducer. Keep original traces private
+if they contain request data or environment details. Upstream-facing work is
+split into small independently tested changes; this repository keeps the full
+experimental integration available for review.
+
+Licensed under Apache-2.0. Original AIBrix copyright and contribution history
+are preserved. The upstream overview below describes AIBrix, not capabilities
+validated by this experimental extension.
+
+---
+
+## Upstream AIBrix
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
