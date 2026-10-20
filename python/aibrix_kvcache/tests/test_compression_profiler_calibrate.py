@@ -284,7 +284,8 @@ def test_gate_stays_closed_with_python_optimization(tmp_path):
         "config_hash='wrong')"
     )
     result = subprocess.run([sys.executable, "-O", "-c", code],
-                             text=True, capture_output=True)
+                             text=True, capture_output=True,
+                             cwd=Path(__file__).resolve().parents[1])
     assert result.returncode != 0
     assert "CalibrationGateError" in result.stderr
 
@@ -379,7 +380,8 @@ def test_cli_exit_nonzero_when_calibration_blocked(tmp_path):
     script = (Path(__file__).parents[1] /
               "tools/compression_profiler_calibrate.py")
     result = subprocess.run([sys.executable, str(script), "--output-dir",
-                             str(tmp_path)], text=True, capture_output=True)
+                             str(tmp_path)], text=True, capture_output=True,
+                             cwd=tmp_path)
     report = json.loads((tmp_path / "calibration.json").read_text())
     assert result.returncode == (0 if report["status"] == "PASS" else 2)
     assert "status" in result.stdout

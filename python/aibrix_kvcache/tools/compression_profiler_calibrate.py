@@ -21,6 +21,7 @@ import json
 import math
 import platform
 import statistics
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -28,18 +29,26 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from aibrix_kvcache.compression.adapter import IdentityCompressionAdapter
-from aibrix_kvcache.compression_profiler.recorder import (
+# Source-tree CLI entry points must work from any working directory.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from aibrix_kvcache.compression.adapter import (
+    IdentityCompressionAdapter,  # noqa: E402
+)
+from aibrix_kvcache.compression_profiler.recorder import (  # noqa: E402
     ShardedRingRecorder,
     TraceRunStatus,
 )
-from aibrix_kvcache.compression_profiler.schema import EventType, TraceEvent
-from aibrix_kvcache.compression_profiler.validation import (
+from aibrix_kvcache.compression_profiler.schema import (  # noqa: E402
+    EventType,
+    TraceEvent,
+)
+from aibrix_kvcache.compression_profiler.validation import (  # noqa: E402
     validate_byte_accounting,
 )
 
-from tools import compression_memory_sample as memory
-from tools.compression_impact_analyze import (
+from tools import compression_memory_sample as memory  # noqa: E402
+from tools.compression_impact_analyze import (  # noqa: E402
     TraceValidationError,
     build_operation_dag,
     critical_path,
