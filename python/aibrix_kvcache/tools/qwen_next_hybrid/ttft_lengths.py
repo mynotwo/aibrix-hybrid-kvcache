@@ -85,8 +85,7 @@ def main(port, run_dir, pairs, *lengths):
             probe = not rows
 
             def name(arm):
-                tag = "local_hit" if arm == "local" else arm
-                return f"bisect-{tag}" if probe else f"{arm}-{length}-{i}"
+                return f"bisect-{arm}" if probe else f"{arm}-{length}-{i}"
 
             row["cold"] = ttft(base, ids, name("cold"))
             time.sleep(SETTLE)

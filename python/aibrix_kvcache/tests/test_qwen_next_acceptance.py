@@ -82,6 +82,33 @@ def test_complete_chain_passes_and_reports_bytes():
     assert result["compression_ratio"] == pytest.approx(2.5)
 
 
+def test_benchmark_request_ids_are_recognized_by_acceptance(
+    tmp_path, monkeypatch
+):
+    from tools.qwen_next_hybrid import ttft_lengths
+
+    requests = []
+
+    def ttft(base, ids, request_id):
+        requests.append(request_id)
+        return {"ttft_s": 0.1, "tokens": [3, 4]}
+
+    monkeypatch.setattr(ttft_lengths, "prompt_ids", lambda *args: [1] * 401)
+    monkeypatch.setattr(ttft_lengths, "ttft", ttft)
+    monkeypatch.setattr(ttft_lengths, "post", lambda *args: {})
+    monkeypatch.setattr(ttft_lengths.time, "sleep", lambda *args: None)
+    ttft_lengths.main("8013", str(tmp_path), "1", "401")
+    by_role = _profile()
+    for rows in by_role.values():
+        for row in rows:
+            tag = row["request_id"].split("-")[2]
+            request = next(r for r in requests if r == f"bisect-{tag}")
+            row["request_id"] = f"cmpl-{request}-0-abcd1234"
+    probe = json.loads((tmp_path / "s2-bisect.json").read_text())
+    result = _evaluate(by_role, probe)
+    assert result["status"] == "PASS", result["failures"]
+
+
 def _drop(role, op):
     return lambda p, b: p[role].remove(
         next(r for r in p[role] if r["operation_id"] == op)
