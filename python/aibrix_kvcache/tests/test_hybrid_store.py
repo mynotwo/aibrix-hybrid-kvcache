@@ -74,6 +74,23 @@ def test_save_evict_load_restores_exact_bytes(backend):
     assert load_stats["stored_bytes"] == stats["stored_bytes"]
 
 
+def test_cpu_restore_does_not_enter_a_cuda_stream(backend, monkeypatch):
+    store = _store(backend, _caches(), "IDENTITY")
+    source, target = {0: [2], 5: [1, 3]}, {0: [4], 5: [0, 5]}
+    original = store.layout.gather(source)
+    store.save(b"cpu-key", source)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("CPU restore entered a CUDA stream")
+
+    monkeypatch.setattr(torch.cuda, "stream", forbidden)
+    try:
+        store.load(b"cpu-key", target)
+        assert store.layout.gather(target) == original
+    finally:
+        store.close()
+
+
 def test_state_and_spans_restore_a_record_part_by_part(backend):
     caches = _caches()
     store = _store(backend, caches, "IDENTITY")

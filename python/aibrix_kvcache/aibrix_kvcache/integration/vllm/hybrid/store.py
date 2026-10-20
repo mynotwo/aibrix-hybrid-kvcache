@@ -41,7 +41,7 @@ import queue
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from typing import Iterator, Mapping, NamedTuple, Optional, Sequence
 
 import torch
@@ -385,7 +385,10 @@ class HybridStore:
             # In order after the work before the load, as on one stream.
             self._upload.wait_stream(torch.cuda.current_stream())
             staged.record_stream(self._upload)
-        with torch.cuda.stream(self._upload):
+        context = (
+            torch.cuda.stream(self._upload) if self._cuda else nullcontext()
+        )
+        with context:
             for i, at in enumerate(range(0, max(host.numel(), 1), step)):
                 if jobs:
                     jobs[i].result()
