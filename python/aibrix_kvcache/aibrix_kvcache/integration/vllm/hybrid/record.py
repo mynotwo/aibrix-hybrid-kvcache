@@ -28,6 +28,7 @@ import warnings
 import weakref
 from concurrent.futures import Executor, Future
 from dataclasses import dataclass
+from typing import cast
 
 import numpy as np
 import torch
@@ -51,7 +52,7 @@ class Header:
 def pin(envelope: memoryview) -> None:
     """Page-lock an envelope from ``RecordCodec.encode`` until it is freed,
     so the GPU reads it by DMA (best effort)."""
-    array = envelope.obj
+    array = cast(np.ndarray, envelope.obj)
     cudart, at = torch.cuda.cudart(), array.ctypes.data
     # Portable: page-locked for every device, whichever is current.
     if int(cudart.cudaHostRegister(at, array.nbytes, 1)) == 0:
@@ -156,7 +157,10 @@ class RecordCodec:
         ``step`` bytes, in order, and ``step``."""
         step = self.step(len(out))
         return [
-            pool.submit(np.copyto, out[at : at + step], np.frombuffer(
-                header.payload[at : at + step], dtype=np.uint8))
+            pool.submit(
+                np.copyto,
+                out[at : at + step],
+                np.frombuffer(header.payload[at : at + step], dtype=np.uint8),
+            )
             for at in range(0, len(out), step)
         ], step

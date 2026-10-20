@@ -853,7 +853,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         logger.info("%s is initialized", self)
 
         # L2 owns its recorder; L1-only managers own one for lifecycle events.
-        self._lifecycle_recorder = NullRecorder()
+        self._lifecycle_recorder: NullRecorder | ShardedRingRecorder = (
+            NullRecorder()
+        )
         if self._l2_cache is None:
             mode, capacity, output, _ = _profiler_config()
             if mode != ProfileMode.OFF:
@@ -901,7 +903,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
                 operation_id=context.operation_id,
                 parent_operation_id=context.parent_operation_id,
                 dependency_ids=context.dependency_ids
-                if dependencies is None else tuple(dependencies),
+                if dependencies is None
+                else tuple(dependencies),
                 event_type=kind,
                 start_ns=start,
                 end_ns=time.clock_gettime_ns(time.CLOCK_MONOTONIC_RAW),
@@ -1207,7 +1210,7 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
     def acquire(self, *args, **kwargs) -> Status[Tuple[int, KVCacheHandle]]:
         context = kwargs.pop("trace_context", None)
         span = self.trace_start(context)
-        completed = [] if span[0] is not None else None
+        completed: list[str] | None = [] if span[0] is not None else None
         prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
 
         if not isinstance(query, TokenListView):
@@ -1217,7 +1220,8 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
             )
 
         status = self._acquire_impl(
-            prefix, query,
+            prefix,
+            query,
             trace_context=context if span[0] is not None else None,
             trace_result=completed,
         )
@@ -1233,7 +1237,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
 
         value = status.get()
         handle = MemoryRegionKVCacheHandle(
-            self.block_dtype, self.block_shape, value  # type: ignore
+            self.block_dtype,
+            self.block_shape,
+            value,  # type: ignore
         )
         self._trace_read_result(handle, completed, operation)
         return Status.ok((len(value) * self.block_ntokens, handle))
@@ -1417,7 +1423,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         # Bypass L1 if L2 cache is enabled with zero copy
         if output_mrs is None and self._l2_cache_has_zero_copy():
             return self._l2_acquire_impl(
-                prefix, query, trace_context=trace_context,
+                prefix,
+                query,
+                trace_context=trace_context,
                 trace_result=trace_result,
             )
 
@@ -1480,7 +1488,10 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         assert self._event_loop is not None
         future = asyncio.run_coroutine_threadsafe(
             self._l2_cache.get(
-                prefix_curr, tokens_curr, mrs, trace_context=trace_context,
+                prefix_curr,
+                tokens_curr,
+                mrs,
+                trace_context=trace_context,
                 trace_result=trace_result,
             ),
             self._event_loop,
@@ -1583,7 +1594,9 @@ class BaseKVCacheManager(KVCacheManager, MeasurableBase):
         ) / 1000
         future = asyncio.run_coroutine_threadsafe(
             self._l2_cache.acquire(  # type: ignore
-                prefix, query, trace_context=trace_context,
+                prefix,
+                query,
+                trace_context=trace_context,
                 trace_result=trace_result,
             ),
             self._event_loop,  # type: ignore
@@ -1931,16 +1944,20 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
     def acquire(self, *args, **kwargs) -> Status[Tuple[int, KVCacheHandle]]:
         context = kwargs.pop("trace_context", None)
         span = self.trace_start(context)
-        completed = [] if span[0] is not None else None
+        completed: list[str] | None = [] if span[0] is not None else None
         prefix, query, _ = parse_kvcache_api_args(*args, **kwargs)
 
         status = self._group_aware_acquire_impl(
-            prefix, query,
+            prefix,
+            query,
             trace_context=context if span[0] is not None else None,
             trace_result=completed,
         )
         operation = self._trace_acquired(
-            span, status, len(query), status.get()[0] if status.is_ok() else 0,
+            span,
+            status,
+            len(query),
+            status.get()[0] if status.is_ok() else 0,
             completed,
         )
         if not status.is_ok():
@@ -1985,7 +2002,9 @@ class GroupAwareKVCacheManager(BaseKVCacheManager):
                 # prefetch
                 super().prefetch(chunk_prefix + chunk_tokens, next_tokens)
             status = super()._acquire_impl(
-                chunk_prefix, chunk_tokens, trace_context=trace_context,
+                chunk_prefix,
+                chunk_tokens,
+                trace_context=trace_context,
                 trace_result=trace_result,
             )
             value = status.get()

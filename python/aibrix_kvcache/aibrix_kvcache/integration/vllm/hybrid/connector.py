@@ -38,7 +38,7 @@ rank's L2_PUT, linking the restore to the request that stored the record.
 
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any, Optional
 
 import torch
@@ -203,10 +203,13 @@ class AIBrixHybridOffloadingConnector(KVConnectorBase_V1, SupportsHMA):
         self._context(request)
         hashes = [bytes(h) for h in request.block_hashes]
         now = OperationTrace.now()
-        if not num_computed_tokens and now - self._miss_since.setdefault(
-            request.request_id, now
-        ) < self._save_wait_ns and self._index.pending_for(
-            hashes, self._plan, num_tokens=request.num_tokens
+        if (
+            not num_computed_tokens
+            and now - self._miss_since.setdefault(request.request_id, now)
+            < self._save_wait_ns
+            and self._index.pending_for(
+                hashes, self._plan, num_tokens=request.num_tokens
+            )
         ):
             # A matching record is still being written; ask again next step.
             return None, False
@@ -314,7 +317,10 @@ class AIBrixHybridOffloadingConnector(KVConnectorBase_V1, SupportsHMA):
                 continue
             meta.saves.append(
                 SaveJob(
-                    req_id, block_hash, boundary, parts,
+                    req_id,
+                    block_hash,
+                    boundary,
+                    parts,
                     self._contexts.get(req_id),
                 )
             )
@@ -413,7 +419,10 @@ class AIBrixHybridOffloadingConnector(KVConnectorBase_V1, SupportsHMA):
             failed = self._each_part(
                 job,
                 lambda key, ids, trace, job=job: self._store.load(
-                    key, ids, readback=self._verify, trace=trace,
+                    key,
+                    ids,
+                    readback=self._verify,
+                    trace=trace,
                     after=job.after,
                 ),
             )
@@ -448,14 +457,16 @@ class AIBrixHybridOffloadingConnector(KVConnectorBase_V1, SupportsHMA):
                 except (HybridStoreError, ValueError) as exc:
                     self._save_done(job, part, None, exc)
                     continue
-                future.add_done_callback(
-                    lambda f, job=job, part=part: self._save_done(
+
+                def done(f: Future, job: SaveJob = job, part: Part = part):
+                    self._save_done(
                         job,
                         part,
                         f.result() if not f.exception() else None,
                         f.exception(),
                     )
-                )
+
+                future.add_done_callback(done)
 
     def _save_done(self, job, part, stats, error) -> None:
         # Index a part only once every byte is in the backend.
@@ -463,10 +474,16 @@ class AIBrixHybridOffloadingConnector(KVConnectorBase_V1, SupportsHMA):
             logger.warning("[AIBrixHybrid] save %s: %s", job.req_id, error)
         with self._meta_lock:
             if error is None:
-                self._worker_meta.stored.append((
-                    part.part, job.block_hash, job.boundary, part.start,
-                    self._rank, stats["put"],
-                ))
+                self._worker_meta.stored.append(
+                    (
+                        part.part,
+                        job.block_hash,
+                        job.boundary,
+                        part.start,
+                        self._rank,
+                        stats["put"],
+                    )
+                )
             else:
                 self._worker_meta.save_failed.append(
                     (part.part, job.block_hash, job.boundary, part.start)

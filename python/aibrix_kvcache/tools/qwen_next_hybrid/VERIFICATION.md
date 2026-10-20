@@ -20,6 +20,18 @@ contains vLLM 0.30.0; passing these tests does not certify every connector API
 interaction or model supported by that image. CPU Python 3.14 is an additional
 local observation, not a package-support commitment.
 
+## CI alignment follow-up
+
+The complete package pre-commit configuration also passes locally, including
+Ruff, pinned formatting, codespell, ClangFormat, PyMarkdown, mypy and headers.
+The CI follow-up makes tool module names consistent, documents the borrowed
+read-only-buffer contract, and adds explicit types to existing dynamic trace
+and staging paths. It does not relax the model acceptance gate.
+
+The CI-aligned source was rechecked on H800: all 63 record/scheduler/codec tests
+passed again. Public CI/build status is tracked separately from these local
+results and must not be inferred from this document.
+
 ## Test commands
 
 From the repository root, with the package's dependencies available:

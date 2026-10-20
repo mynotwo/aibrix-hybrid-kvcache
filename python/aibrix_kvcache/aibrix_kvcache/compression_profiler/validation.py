@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2026 The Aibrix Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,7 +26,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
 from math import isfinite
@@ -27,6 +41,7 @@ class ValidationReport:
     valid: bool
     reasons: tuple[str, ...]
     unknowns: tuple[str, ...] = ()
+
 
 # Codecs that encode on the GPU, so that only the encoding crosses PCIe
 # (events spell codecs in either case).
@@ -140,7 +155,9 @@ def validate_trace(
                 if current.get("block_key") and prior.get("block_key"):
                     if _identity(current) != _identity(prior):
                         invalid("block_identity_conflict")
-        graph = {operation: set() for operation in operations}
+        graph: dict[str, set[str]] = {
+            operation: set() for operation in operations
+        }
         for operation, dependency in dependencies:
             if operation in graph and dependency in graph:
                 graph[operation].add(dependency)
@@ -240,8 +257,14 @@ def validate_byte_accounting(records: Iterable[Mapping]) -> ValidationReport:
         kind = row.get("event_type")
         if kind in ("codec_encode", "codec_decode"):
             if row.get("raw_bytes") is None:
-                equal(row, "decode_output_bytes" if kind == "codec_decode"
-                      else "raw_bytes", None, None)
+                equal(
+                    row,
+                    "decode_output_bytes"
+                    if kind == "codec_decode"
+                    else "raw_bytes",
+                    None,
+                    None,
+                )
             equal(
                 row,
                 "envelope_bytes",
@@ -269,8 +292,10 @@ def validate_byte_accounting(records: Iterable[Mapping]) -> ValidationReport:
             ("read", "retrieved_object_bytes"),
         ):
             name = f"connector_{direction}_bytes"
-            applicable = (kind, direction) in (("l2_put", "write"),
-                                              ("l2_get", "read"))
+            applicable = (kind, direction) in (
+                ("l2_put", "write"),
+                ("l2_get", "read"),
+            )
             if applicable or row.get(name) is not None:
                 equal(
                     row,
@@ -391,7 +416,7 @@ _RESOURCE_FIELDS = (
 
 
 def has_resume_path(
-    records: list[Mapping], terminals: Iterable[str] | None = None
+    records: Sequence[Mapping], terminals: Iterable[str] | None = None
 ) -> bool:
     """A kv_import whose dependency ancestry holds the chain in order.
 
@@ -401,7 +426,7 @@ def has_resume_path(
     """
     by_id = {record.get("operation_id"): record for record in records}
     wanted = _QWEN_RESUME_CHAIN[::-1]
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str | None, int]] = set()
     allowed = None if terminals is None else set(terminals)
     stack = [
         (record.get("operation_id"), 0)

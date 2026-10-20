@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """TTFT by prompt length: recompute, local GPU prefix hit, AIBrix restore.
 
 Per length, PAIRS unique prompts of exactly that many tokens. Each is sent
@@ -18,6 +32,7 @@ import statistics
 import sys
 import time
 import urllib.request
+from typing import Any
 
 MODEL = "qwen-next"
 MAX_TOKENS = 32
@@ -52,7 +67,8 @@ def ttft(base, ids, request_id):
         "return_token_ids": True,
         "request_id": request_id,
     }
-    start, first, tokens = time.perf_counter(), None, []
+    start, first = time.perf_counter(), None
+    tokens: list[int] = []
     with post(base, "/v1/completions", body, stream=True) as resp:
         for line in resp:
             line = line.decode().strip()
@@ -77,11 +93,12 @@ def prompt_ids(base, rng, length, pair):
 
 
 def main(port, run_dir, pairs, *lengths):
-    base, rng, rows = f"http://127.0.0.1:{port}", random.Random(20261018), []
+    base, rng = f"http://127.0.0.1:{port}", random.Random(20261018)
+    rows: list[dict[str, Any]] = []
     for length in map(int, lengths):
         for i in range(int(pairs)):
             ids = prompt_ids(base, rng, length, i)
-            row = {"length": length, "pair": i}
+            row: dict[str, Any] = {"length": length, "pair": i}
             probe = not rows
 
             def name(arm):
@@ -89,31 +106,46 @@ def main(port, run_dir, pairs, *lengths):
 
             row["cold"] = ttft(base, ids, name("cold"))
             time.sleep(SETTLE)
-            order = ("local", "external") if i % 2 == 0 else (
-                "external", "local")
+            order = (
+                ("local", "external") if i % 2 == 0 else ("external", "local")
+            )
             for arm in order:
                 if arm == "external":
                     post(base, "/reset_prefix_cache")
                     time.sleep(0.2)
                 row[arm] = ttft(base, ids, name(arm))
             rows.append(row)
-            print(length, i, *(round(row[a]["ttft_s"] * 1000, 1)
-                               for a in ("cold", "local", "external")),
-                  flush=True)
+            print(
+                length,
+                i,
+                *(
+                    round(row[a]["ttft_s"] * 1000, 1)
+                    for a in ("cold", "local", "external")
+                ),
+                flush=True,
+            )
     with open(f"{run_dir}/ttft.jsonl", "w") as f:
         f.writelines(json.dumps(row) + "\n" for row in rows)
     first = rows[0]
     with open(f"{run_dir}/s2-bisect.json", "w") as f:
-        json.dump({
-            "prompt_tokens": first["length"],
-            "cold": first["cold"]["tokens"],
-            "local_hit": first["local"]["tokens"],
-            "external": first["external"]["tokens"],
-        }, f)
+        json.dump(
+            {
+                "prompt_tokens": first["length"],
+                "cold": first["cold"]["tokens"],
+                "local_hit": first["local"]["tokens"],
+                "external": first["external"]["tokens"],
+            },
+            f,
+        )
     summary = {
         length: {
-            f"{arm}_ttft_ms": round(1000 * statistics.median(
-                r[arm]["ttft_s"] for r in rows if r["length"] == length), 1)
+            f"{arm}_ttft_ms": round(
+                1000
+                * statistics.median(
+                    r[arm]["ttft_s"] for r in rows if r["length"] == length
+                ),
+                1,
+            )
             for arm in ("cold", "local", "external")
         }
         for length in sorted({r["length"] for r in rows})

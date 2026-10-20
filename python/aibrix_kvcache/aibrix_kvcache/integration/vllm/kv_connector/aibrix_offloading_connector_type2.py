@@ -265,9 +265,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
         seq_recv_len = 0
 
         # get KV caches from offloading service
-        status = self.cache.acquire(
-            prefix, tokens, trace_context=trace_context
-        )
+        status = self.cache.acquire(prefix, tokens, trace_context=trace_context)
 
         if not status.is_ok():
             if not status.is_not_found():
@@ -354,9 +352,7 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 dependencies=getattr(handle, "_profiler_dependencies", ()),
             )
             if span[0] is not None:
-                pending_spans.append(
-                    (span, self.layer_ids[lid], length)
-                )
+                pending_spans.append((span, self.layer_ids[lid], length))
 
         if slot_mapping_offset == 0:
             return
@@ -411,7 +407,8 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 kind,
                 phase=(
                     "connector_layer_submit"
-                    if rejected else "connector_layer_wait"
+                    if rejected
+                    else "connector_layer_wait"
                 ),
                 layer=layer,
                 layer_observed=True,
@@ -419,8 +416,11 @@ class AIBrixOffloadingConnectorWorker(Type1Worker):
                 result="copied" if error is None else "error",
                 error_class=type(error).__name__ if error is not None else "",
                 restore_result=(
-                    "rejected" if rejected
-                    else "restored" if error is None else "failed"
+                    "rejected"
+                    if rejected
+                    else "restored"
+                    if error is None
+                    else "failed"
                 )
                 if kind == EventType.KV_IMPORT
                 else "",

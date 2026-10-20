@@ -390,7 +390,7 @@ class L1Cache(MeasurableBase):
                 block_key = KVCacheKey(block_prefix, block_query)
                 # Bind scalar metadata to this allocation, before any policy
                 # callback can run under the same lock. Always clear old data.
-                block_mr._profiler_context = trace_context
+                setattr(block_mr, "_profiler_context", trace_context)
                 if not self._eviction_policy.put(block_key, block_mr).is_ok():
                     break
                 bi += 1

@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Run isolated OFF/LIGHT compression benchmark pairs and report evidence."""
 
 import argparse
@@ -12,8 +26,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-sys.path.insert(0, str(Path(__file__).parent))
-import compression_impact_stats as stats  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from tools import compression_impact_stats as stats  # noqa: E402
 
 PREFIXES = (128, 512, 2048)
 CONCURRENCIES = (1, 4, 16)
@@ -90,7 +104,7 @@ def detailed_engine_request_id(request_id, *, n=1):
 
 
 def engine_request_ids(records):
-    result = []
+    result: list[str | None] = []
     for row in records:
         requested = row.get("requested_request_id")
         if not requested or row.get("request_id") != f"cmpl-{requested}":
@@ -261,8 +275,8 @@ def _run_arm(
     artifacts.mkdir(parents=True, exist_ok=True)
     case["trace_path"] = artifacts / "events.jsonl"
     case["l2_trace_path"] = artifacts / "l2-trace.jsonl"
-    from compression_impact_page_cache import prepare_page_cache
-    from compression_impact_seed import stage_manifest
+    from tools.compression_impact_page_cache import prepare_page_cache
+    from tools.compression_impact_seed import stage_manifest
 
     staged = stage_manifest(
         seed_manifest,
@@ -551,7 +565,7 @@ def main():
     args = parser.parse_args()
     if args.repetitions < 30:
         parser.error("at least 30 measured paired repetitions are required")
-    from compression_impact_runner import run_matrix
+    from tools.compression_impact_runner import run_matrix
 
     report = run_matrix(args)
     print(json.dumps(report, indent=2))

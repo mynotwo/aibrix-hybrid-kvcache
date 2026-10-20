@@ -58,9 +58,7 @@ class HybridWorkerMetadata(KVConnectorWorkerMetadata):
     )
     # (part, block hash, boundary, start) of parts that failed to load/save.
     failed: list[tuple[str, bytes, int, int]] = field(default_factory=list)
-    save_failed: list[tuple[str, bytes, int, int]] = field(
-        default_factory=list
-    )
+    save_failed: list[tuple[str, bytes, int, int]] = field(default_factory=list)
 
     def aggregate(self, other: "KVConnectorWorkerMetadata"):
         assert isinstance(other, HybridWorkerMetadata)

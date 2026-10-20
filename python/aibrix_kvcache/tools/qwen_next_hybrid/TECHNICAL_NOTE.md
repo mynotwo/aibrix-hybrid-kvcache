@@ -80,3 +80,12 @@ point, not a portable compatibility test for every hybrid model.
 
 Upstream contributions start with small independently tested backend contracts.
 The full connector remains experimental while model correctness is investigated.
+
+Upstream design discussion:
+https://github.com/vllm-project/aibrix/issues/3220
+
+First isolated backend PR (draft):
+https://github.com/vllm-project/aibrix/pull/3221
+
+Model-level correctness investigation:
+https://github.com/mynotwo/aibrix-hybrid-kvcache/issues/1

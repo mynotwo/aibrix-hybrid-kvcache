@@ -6,7 +6,7 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-"""Bounded in-process connector for production variable-payload storage."""
+"""Bounded in-process connector for variable-length byte payloads."""
 
 from collections import OrderedDict
 from concurrent.futures import Executor
@@ -25,12 +25,19 @@ from . import Connector, ConnectorFeature
 
 @dataclass
 class _Entry:
-    payload: bytes
+    payload: bytes | memoryview
     readers: int = 0
 
 
 class MemoryConnector(Connector[bytes, torch.Tensor]):
-    """Capacity-bounded LRU byte store with reader-safe eviction."""
+    """Process-local LRU byte store with reader-safe eviction.
+
+    Capacity counts payload bytes, not Python object overhead. A read-only
+    memoryview is borrowed without copying: its owner must keep the backing
+    buffer unchanged while the record is stored or read. Other inputs are
+    copied. Set AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES for the factory;
+    the default is 10 GiB per connector instance.
+    """
 
     def __init__(self, capacity_bytes: int):
         if type(capacity_bytes) is not int or capacity_bytes <= 0:
@@ -88,7 +95,7 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
                 Status.ok() if key in store else Status(StatusCodes.NOT_FOUND)
             )
 
-    async def get_bytes(self, key: bytes) -> Status[bytes]:
+    async def get_bytes(self, key: bytes) -> Status[bytes | memoryview]:
         with self._lock:
             store = self._store()
             entry = store.get(key)
@@ -97,9 +104,12 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
             store.move_to_end(key)
             return Status.ok(entry.payload)
 
-    async def put_bytes(self, key: bytes, payload: bytes) -> Status:
+    async def put_bytes(
+        self, key: bytes, payload: bytes | memoryview
+    ) -> Status:
         # A read-only memoryview cannot be mutated through itself; keep it
         # as is so large payloads are not copied while holding the GIL.
+        immutable: bytes | memoryview
         if isinstance(payload, memoryview) and payload.readonly:
             immutable = payload
         else:
@@ -132,7 +142,9 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
         return Status.ok()
 
     @asynccontextmanager
-    async def lease_bytes(self, key: bytes) -> AsyncIterator[bytes]:
+    async def lease_bytes(
+        self, key: bytes
+    ) -> AsyncIterator[bytes | memoryview]:
         with self._lock:
             store = self._store()
             entry = store.get(key)
@@ -169,7 +181,7 @@ class MemoryConnector(Connector[bytes, torch.Tensor]):
         status = await self.get_bytes(key)
         if not status.is_ok():
             return Status(status)
-        mr.fill(status.get())
+        mr.fill(bytes(status.get()))
         return Status.ok()
 
     async def put(

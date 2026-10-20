@@ -110,9 +110,7 @@ class Connector(Generic[K, V]):
         if len(signatures) > 0:
             conn_id = f"{conn_id}_{signatures}"
 
-        expected_conn_id = os.getenv(
-            "AIBRIX_KV_CACHE_OL_EXPECTED_CONN_ID", ""
-        )
+        expected_conn_id = os.getenv("AIBRIX_KV_CACHE_OL_EXPECTED_CONN_ID", "")
         if expected_conn_id and expected_conn_id != conn_id:
             raise ValueError(
                 "runtime connector ID does not match staged seed namespace"
@@ -223,11 +221,11 @@ class Connector(Generic[K, V]):
         """
         raise NotImplementedError
 
-    async def get_bytes(self, key: K) -> Status[bytes]:
+    async def get_bytes(self, key: K) -> Status[bytes | memoryview]:
         """Get a variable-length payload without a destination MR."""
         raise NotImplementedError
 
-    async def put_bytes(self, key: K, payload: bytes) -> Status:
+    async def put_bytes(self, key: K, payload: bytes | memoryview) -> Status:
         """Store a variable-length payload."""
         raise NotImplementedError
 

@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2026 The Aibrix Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +31,7 @@ from collections import Counter
 from collections.abc import Mapping
 
 # Each resume stage starts once the stage it consumes has ended.
-_STAGE_INPUT = {
+_STAGE_INPUT: dict[str | None, str] = {
     "codec_encode": "kv_export",
     "l2_put": "codec_encode",
     "l2_get": "eviction",
@@ -31,15 +45,17 @@ def resume_stage_reasons(records: list[Mapping]) -> list[str]:
     back every object it waited for at the size it was stored (a failed
     read counts as a difference)."""
     by_id = {record.get("operation_id"): record for record in records}
-    reasons, read = [], {}
+    reasons: list[str] = []
+    read: dict[str, Counter[int | None]] = {}
     for row in records:
         kind = row.get("event_type")
         # Device work happens inside its host window, queue included.
         if row.get("device_end") is not None:
             begin = row.get("enqueue_ns") or row.get("start_ns", 0)
-            if row["device_end"] - row.get("device_start", 0) > row.get(
-                "end_ns", 0
-            ) - begin:
+            if (
+                row["device_end"] - row.get("device_start", 0)
+                > row.get("end_ns", 0) - begin
+            ):
                 reasons.append("device_exceeds_host_window")
         for dep in row.get("dependency_ids") or ():
             prior = by_id.get(dep, {})

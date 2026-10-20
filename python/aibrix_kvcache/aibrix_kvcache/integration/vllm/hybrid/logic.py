@@ -188,8 +188,13 @@ class GroupPlan:
         )
 
     def save_parts(
-        self, block_ids, offloads, block_hash: bytes, boundary: int, *,
-        start: int
+        self,
+        block_ids,
+        offloads,
+        block_hash: bytes,
+        boundary: int,
+        *,
+        start: int,
     ) -> list[Part]:
         """Source blocks of the state at ``boundary`` and its new span."""
         return [

@@ -248,9 +248,7 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_COMPRESSION", "").strip().upper()
     ),
     "AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES": lambda: int(
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES", str(10 * 1024**3)
-        )
+        os.getenv("AIBRIX_KV_CACHE_OL_MEMORY_CAPACITY_BYTES", str(10 * 1024**3))
     ),
     "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_MODE": lambda: os.getenv(
         "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_MODE", "OFF"

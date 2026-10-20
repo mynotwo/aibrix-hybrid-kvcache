@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Service/request lifecycle for reproducible compression-impact matrices."""
 
 import json
@@ -7,7 +21,7 @@ import sys
 import uuid
 from pathlib import Path
 
-import compression_impact_matrix as matrix
+from tools import compression_impact_matrix as matrix
 
 SERVING_DEFAULTS = {
     "dtype": "bfloat16",
@@ -45,9 +59,7 @@ def _serving_env(config):
         "PHASE0_DTYPE": config["dtype"],
         "PHASE0_TENSOR_PARALLEL_SIZE": str(config["tensor_parallel_size"]),
         "PHASE0_MAX_MODEL_LEN": str(config["max_model_len"]),
-        "PHASE0_GPU_MEMORY_UTILIZATION": str(
-            config["gpu_memory_utilization"]
-        ),
+        "PHASE0_GPU_MEMORY_UTILIZATION": str(config["gpu_memory_utilization"]),
         "PHASE0_ENFORCE_EAGER": str(config["enforce_eager"]).lower(),
         "PHASE0_ENABLE_PREFIX_CACHING": str(
             config["enable_prefix_caching"]
@@ -55,9 +67,7 @@ def _serving_env(config):
     }
 
 
-def validate_model_provenance(
-    model_path, provenance, *, model, revision
-):
+def validate_model_provenance(model_path, provenance, *, model, revision):
     model_path = Path(model_path)
     if model_path.is_symlink() or not model_path.is_dir():
         raise ValueError("model path must be a local immutable snapshot")
@@ -200,9 +210,7 @@ def run_matrix(args):
         "config": config,
         "serving_config": serving,
         "model_provenance": model_provenance,
-        "model_provenance_sha256": matrix.sha256_file(
-            args.model_provenance
-        ),
+        "model_provenance_sha256": matrix.sha256_file(args.model_provenance),
         "seed_manifest_dir": str(args.seed_manifest_dir.resolve()),
         "seed_manifests": {
             f"{prefix}/{storage}": digest
@@ -213,8 +221,7 @@ def run_matrix(args):
         "experiment_id": experiment_id,
         "vllm_version": vllm_version,
         "request_id_contract": (
-            "vLLM 0.10.2: cmpl-<request_id>, engine "
-            "cmpl-<request_id>-0, n=1"
+            "vLLM 0.10.2: cmpl-<request_id>, engine cmpl-<request_id>-0, n=1"
         ),
     }
     if args.repetitions < 30 or args.repetitions % 2:

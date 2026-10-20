@@ -144,8 +144,12 @@ class HybridStore:
             buf = self._pinned(size)
         return buf
 
-    def save(self, key: bytes, block_ids: Mapping[int, Sequence[int]],
-             trace: Optional[OperationTrace] = None) -> dict:
+    def save(
+        self,
+        key: bytes,
+        block_ids: Mapping[int, Sequence[int]],
+        trace: Optional[OperationTrace] = None,
+    ) -> dict:
         return self.save_async(key, block_ids, trace).result()
 
     def save_async(
@@ -179,8 +183,18 @@ class HybridStore:
             # E.g. out of device memory: lose this save, not the engine.
             raise HybridStoreError(f"save staging failed: {exc}") from exc
         ans = flat if self._ans is not None else None
-        return self._saver.submit(self._encode_put, key, buf, size, check,
-                                  ans, began, done, trace, enqueued)
+        return self._saver.submit(
+            self._encode_put,
+            key,
+            buf,
+            size,
+            check,
+            ans,
+            began,
+            done,
+            trace,
+            enqueued,
+        )
 
     @contextmanager
     def _off_worker_stream(self, flat: torch.Tensor) -> Iterator[None]:
@@ -207,18 +221,24 @@ class HybridStore:
             start = clock(trace)
             if done is not None:
                 done.synchronize()
-            host, frames = buf[:size], ([], 0)
+            host = buf[:size]
+            frames: tuple[list[int], int] = ([], 0)
             if flat is not None:
                 buf, frames = self._ans_encode(flat, buf)
                 host = buf[: sum(frames[0])]
             exported = stage(
-                trace, EventType.KV_EXPORT, key, start,
+                trace,
+                EventType.KV_EXPORT,
+                key,
+                start,
                 trace.context.dependency_ids if trace else (),
                 enqueue_ns=enqueued,
                 # GPU time of the gather and copy alone (an ANS encoding is
                 # in the host window); before it, the step's kernels ran.
                 **device_window(began, done),
-                phase="d2h", raw_bytes=size, transferred_bytes=host.numel(),
+                phase="d2h",
+                raw_bytes=size,
+                transferred_bytes=host.numel(),
                 result="copied",
             )
             return self._encode_put_staged(
@@ -234,6 +254,7 @@ class HybridStore:
         they outgrow, a larger buffer; it, frame lengths and raw frame size.
         Under the store's device: nvCOMP waits there for each frame's size.
         """
+        assert self._ans is not None
         lengths, at = [], 0
         with torch.cuda.device(self._device), torch.cuda.stream(self._side):
             for frame in self._ans.encode(flat):
@@ -250,11 +271,22 @@ class HybridStore:
 
     def _already_stored(self, key, size, trace) -> dict:
         after = trace.context.dependency_ids if trace else ()
-        put = stage(trace, EventType.L2_PUT, key, clock(trace), after,
-                    destination_tier="L2", connector_write_bytes=0,
-                    stored_object_bytes=0, result="hit")
-        return {"raw_bytes": size, "stored_bytes": 0,
-                "put": put[0] if put else ""}
+        put = stage(
+            trace,
+            EventType.L2_PUT,
+            key,
+            clock(trace),
+            after,
+            destination_tier="L2",
+            connector_write_bytes=0,
+            stored_object_bytes=0,
+            result="hit",
+        )
+        return {
+            "raw_bytes": size,
+            "stored_bytes": 0,
+            "put": put[0] if put else "",
+        }
 
     def _encode_put_staged(
         self, key, host, size, check, frames, trace, exported
@@ -319,8 +351,14 @@ class HybridStore:
         envelope = memoryview(status.get()) if status.is_ok() else None
         size = len(envelope) if envelope is not None else None
         got = stage(
-            trace, EventType.L2_GET, key, start, after, phase=phase,
-            source_tier="L2", connector_read_bytes=size,
+            trace,
+            EventType.L2_GET,
+            key,
+            start,
+            after,
+            phase=phase,
+            source_tier="L2",
+            connector_read_bytes=size,
             retrieved_object_bytes=size,
             result="loaded" if status.is_ok() else "not_found",
         )
@@ -352,8 +390,15 @@ class HybridStore:
         except torch.OutOfMemoryError as exc:  # recompute, keep the engine
             raise HybridStoreError(f"restore staging failed: {exc}") from exc
         except (ValueError, KeyError) as exc:
-            stage(trace, EventType.CODEC_DECODE, key, start, got,
-                   phase=phase, result="integrity_error")
+            stage(
+                trace,
+                EventType.CODEC_DECODE,
+                key,
+                start,
+                got,
+                phase=phase,
+                result="integrity_error",
+            )
             raise HybridStoreError(f"record integrity: {exc}") from exc
         finally:
             # The host buffer is reused: nothing may still read or write it.
@@ -364,14 +409,22 @@ class HybridStore:
                 self._upload.synchronize()
                 torch.cuda.current_stream().synchronize()
         decoded = stage(
-            trace, EventType.CODEC_DECODE, key, start, got, phase=phase,
-            raw_bytes=expected, decode_output_bytes=expected,
+            trace,
+            EventType.CODEC_DECODE,
+            key,
+            start,
+            got,
+            phase=phase,
+            raw_bytes=expected,
+            decode_output_bytes=expected,
             payload_bytes=len(header.payload),
-            metadata_bytes=header.meta_bytes, framing_bytes=FRAMING,
+            metadata_bytes=header.meta_bytes,
+            framing_bytes=FRAMING,
             envelope_bytes=len(envelope),
             checksum_algorithm=CHECKSUMS[self.codec],
             cpu_process_start_ns=cpu,
-            cpu_process_end_ns=time.process_time_ns(), result="decoded",
+            cpu_process_end_ns=time.process_time_ns(),
+            result="decoded",
         )
         return Fetched(flat, decoded, len(envelope), host.numel(), start, began)
 
@@ -440,9 +493,11 @@ class HybridStore:
                 transferred_bytes=fetched.transferred_bytes,
                 **device_window(fetched.began, ended),
                 result="restored",
-                restore_result={True: "readback_equal", False:
-                                "readback_differs"}.get(
-                    stats.get("readback_equal"), "restored"),
+                restore_result={
+                    True: "readback_equal",
+                    False: "readback_differs",
+                    None: "restored",
+                }.get(stats.get("readback_equal"), "restored"),
             )
             return stats
         finally:
@@ -483,7 +538,8 @@ class HybridStore:
                 phase="verify",
                 raw_bytes=len(stored),
                 result="compared",
-                restore_result="equal" if not differing
+                restore_result="equal"
+                if not differing
                 else f"differs:{differing}/{len(report)}",
             )
             return report

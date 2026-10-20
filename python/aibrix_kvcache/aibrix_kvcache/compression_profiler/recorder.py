@@ -1,3 +1,17 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 # Copyright 2026 The Aibrix Team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -106,9 +120,7 @@ class ShardedRingRecorder:
 
     def _claim_output(self) -> None:
         self._guard_path.parent.mkdir(parents=True, exist_ok=True)
-        guard_fd = os.open(
-            self._guard_path, os.O_CREAT | os.O_RDWR, 0o600
-        )
+        guard_fd = os.open(self._guard_path, os.O_CREAT | os.O_RDWR, 0o600)
         try:
             fcntl.flock(guard_fd, fcntl.LOCK_EX)
             owner_exists = self._owner_path.exists()
@@ -190,8 +202,11 @@ class ShardedRingRecorder:
                     self._invalidate("dropped_event", dropped=True)
                     return False
         try:
-            event = (event_or_factory() if callable(event_or_factory)
-                     else event_or_factory)
+            event = (
+                event_or_factory()
+                if callable(event_or_factory)
+                else event_or_factory
+            )
             # Exact schema objects guarantee scalar-only ownership, including
             # no subclasses that attach a KV buffer or MemoryRegion.
             if type(event) is not TraceEvent:
@@ -222,9 +237,8 @@ class ShardedRingRecorder:
             targets = tuple((shard, shard.accepted) for shard in self._shards)
             self._condition.notify_all()
             self._condition.wait_for(
-                lambda: self._export_failed or all(
-                    shard.exported >= target for shard, target in targets
-                )
+                lambda: self._export_failed
+                or all(shard.exported >= target for shard, target in targets)
             )
 
     def close(self) -> None:
@@ -302,6 +316,7 @@ class ShardedRingRecorder:
                     with shard.lock:
                         batches.append((shard, tuple(shard.events)))
                 events = [event for _, batch in batches for event in batch]
+                assert self._exporter is not None
                 self._exporter.write_batch(events)
                 for shard, batch in batches:
                     with shard.lock:

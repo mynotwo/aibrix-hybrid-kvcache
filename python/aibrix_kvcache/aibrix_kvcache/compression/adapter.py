@@ -213,8 +213,10 @@ class _EnvelopeCompressionAdapter:
             raise ValueError("invalid compression envelope framing")
         (metadata,) = struct.unpack_from("<I", envelope, len(self._MAGIC))
         payload = len(block.payload)
-        if (payload != block.metadata.compressed_length
-                or payload + metadata + framing != len(envelope)):
+        if (
+            payload != block.metadata.compressed_length
+            or payload + metadata + framing != len(envelope)
+        ):
             raise ValueError("envelope size does not match block")
         if not trusted and self.deserialize(envelope) != block:
             raise ValueError("envelope does not match block")

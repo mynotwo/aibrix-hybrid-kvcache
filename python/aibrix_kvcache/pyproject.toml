@@ -70,7 +70,7 @@ unfixable = []
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 
 [tool.codespell]
-ignore-words-list = "dout, te, indicies, subtile, ElementE"
+ignore-words-list = "dout, te, indicies, subtile, ElementE, ans"
 
 [tool.cibuildwheel]
 # Explicitly specify Python 3.11 and 3.12 for manylinux x86_64

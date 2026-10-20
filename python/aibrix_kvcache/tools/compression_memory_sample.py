@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Sample independent process/device/cache counters without summing tiers.
 
 L1/L2 providers report logical resident bytes; RSS/PSS are OS observations;
@@ -119,8 +133,12 @@ class MemorySampler:
         writer = csv.DictWriter(stream, fieldnames=COLUMNS)
         writer.writeheader()
         for sample in samples:
-            writer.writerow({key: "null" if value is None else value
-                             for key, value in sample["values"].items()})
+            writer.writerow(
+                {
+                    key: "null" if value is None else value
+                    for key, value in sample["values"].items()
+                }
+            )
         data = stream.getvalue().encode()
         metadata = {
             "schema_version": 1,
@@ -154,8 +172,10 @@ class MemorySampler:
         try:
             for destination, content in ((path, data), (sidecar, encoded)):
                 fd, name = tempfile.mkstemp(
-                    prefix=f".{destination.name}.", suffix=".tmp",
-                    dir=path.parent)
+                    prefix=f".{destination.name}.",
+                    suffix=".tmp",
+                    dir=path.parent,
+                )
                 temporary.append((Path(name), destination))
                 with os.fdopen(fd, "wb") as handle:
                     handle.write(content)
@@ -200,15 +220,18 @@ def read_file_bundle(paths):
 def _file_version(path):
     state = path.stat()
     # Exclude atime; inode/ctime catch replace and same-size writes.
-    return tuple(getattr(state, key) for key in (
-        "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))
+    return tuple(
+        getattr(state, key)
+        for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+    )
 
 
 def verify_file_bundle(versions):
     # Check the manifest (the first captured file) last. No sticky invalidation:
     # callers can retry once a writer has committed its whole new generation.
-    if any(_file_version(path) != versions[path]
-           for path in reversed(versions)):
+    if any(
+        _file_version(path) != versions[path] for path in reversed(versions)
+    ):
         raise ValueError("bundle changed; retry committed generation")
 
 
@@ -220,8 +243,13 @@ def decode_memory_pair(data, encoded):
     reader = csv.DictReader(io.StringIO(data.decode()))
     if reader.fieldnames != list(COLUMNS):
         raise ValueError("invalid memory CSV columns")
-    rows = [{key: None if value == "null" else int(value)
-             for key, value in row.items()} for row in reader]
+    rows = [
+        {
+            key: None if value == "null" else int(value)
+            for key, value in row.items()
+        }
+        for row in reader
+    ]
     if len(rows) != len(metadata["samples"]):
         raise ValueError("memory sample count mismatch")
     for row, sample in zip(rows, metadata["samples"]):
@@ -233,7 +261,8 @@ def decode_memory_pair(data, encoded):
             if value is not None and (type(value) is not int or value < 0):
                 raise ValueError("invalid memory counter")
             if key in COLUMNS[2:] and (
-                    sample["availability"][key] is not (value is not None)):
+                sample["availability"][key] is not (value is not None)
+            ):
                 raise ValueError("memory null/availability mismatch")
     return dict(rows=rows, metadata=metadata)
 

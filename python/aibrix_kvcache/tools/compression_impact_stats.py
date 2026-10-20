@@ -1,8 +1,23 @@
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Paired OFF/LIGHT summaries for compression-impact benchmark runs."""
 
 import math
 import random
 import statistics
+from typing import Any
 
 METRIC_LIMITS = {
     "throughput_tokens_per_second": 1.0,
@@ -84,7 +99,7 @@ def summarize_pairs(pairs, *, bootstrap_samples=2000, seed=12345):
         ):
             raise ValueError("invalid trace cannot enter statistics")
     rng = random.Random(seed)
-    report = {
+    report: dict[str, Any] = {
         "paired_repetitions": len(pairs),
         "batch_concurrency": sorted(
             {len(pair["OFF"]["requests"]) for pair in pairs}
@@ -176,11 +191,9 @@ def summarize_storage_pairs(
         for raw_request, compressed_request in zip(
             raw_requests, compressed_requests
         ):
-            if (
-                not raw_request.get("token_ids")
-                or raw_request.get("token_ids")
-                != compressed_request.get("token_ids")
-            ):
+            if not raw_request.get("token_ids") or raw_request.get(
+                "token_ids"
+            ) != compressed_request.get("token_ids"):
                 raise ValueError("raw/compressed token IDs differ")
         pairs.append(
             {
@@ -226,7 +239,7 @@ def paired_rows(groups, order):
             raise ValueError("ABBA arms did not alternate")
         if len(groups[first]) != len(groups[second]):
             raise ValueError("paired arms must have the same repetition count")
-        arms = {}
+        arms: dict[str, list] = {}
         for left, right in zip(groups[first], groups[second]):
             rows = {
                 order[first]: left,

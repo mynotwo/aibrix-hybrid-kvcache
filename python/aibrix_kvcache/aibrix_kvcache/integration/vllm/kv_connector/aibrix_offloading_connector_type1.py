@@ -482,8 +482,9 @@ def _request_trace_context(
             return previous.child(
                 uuid.uuid4().hex, dependencies=(previous.operation_id,)
             )
-        experiment_id = (
-            aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_EXPERIMENT_ID
+        experiment_id = getattr(
+            aibrix_kvcache.envs,
+            "AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_EXPERIMENT_ID",
         )
         run_id = (
             aibrix_kvcache.envs.AIBRIX_KV_CACHE_OL_COMPRESSION_PROFILER_RUN_ID
@@ -957,14 +958,20 @@ class AIBrixOffloadingConnectorWorker:
             seq_meta_cache = self._meta_cache[req_id]
             seq_meta_cache.extend(meta.seq_token_ids, meta.seq_slot_mapping)
             context = meta.trace_context
-            if context is not None and getattr(
-                seq_meta_cache, "_trace_operation", None
-            ) != context.operation_id:
+            if (
+                context is not None
+                and getattr(seq_meta_cache, "_trace_operation", None)
+                != context.operation_id
+            ):
                 self.cache.trace_finish(
-                    (context, None), EventType.REQUEST, phase="scheduled",
+                    (context, None),
+                    EventType.REQUEST,
+                    phase="scheduled",
                     result="received",
                 )
-                seq_meta_cache._trace_operation = context.operation_id
+                setattr(
+                    seq_meta_cache, "_trace_operation", context.operation_id
+                )
 
     def register_kv_caches(self, kv_caches: dict[str, torch.Tensor]) -> None:
         self.kv_caches = kv_caches
@@ -1090,7 +1097,8 @@ class AIBrixOffloadingConnectorWorker:
 
             # get KV caches from offloading service
             status = self.cache.acquire(
-                chunk_prefix, chunk_tokens,
+                chunk_prefix,
+                chunk_tokens,
                 trace_context=trace_context,
             )
 
@@ -1133,8 +1141,12 @@ class AIBrixOffloadingConnectorWorker:
                     self.kv_layout_blocks_first,
                 )
             self.cache.trace_finish(
-                import_span, EventType.KV_IMPORT, phase="connector_sync",
-                result="copied", restore_result="restored", token_count=length,
+                import_span,
+                EventType.KV_IMPORT,
+                phase="connector_sync",
+                result="copied",
+                restore_result="restored",
+                token_count=length,
             )
 
             logger.info(
@@ -1356,8 +1368,11 @@ class AIBrixOffloadingConnectorWorker:
                     self.kv_layout_blocks_first,
                 )
             self.cache.trace_finish(
-                export_span, EventType.KV_EXPORT, phase="connector_sync",
-                result="copied", token_count=length,
+                export_span,
+                EventType.KV_EXPORT,
+                phase="connector_sync",
+                result="copied",
+                token_count=length,
             )
 
             logger.info(
@@ -1369,7 +1384,9 @@ class AIBrixOffloadingConnectorWorker:
 
             # put KV caches to offloading service
             status = self.cache.put(
-                chunk_prefix, chunk_tokens[:length], handle,
+                chunk_prefix,
+                chunk_tokens[:length],
+                handle,
                 trace_context=export_span[0],
             )
             if not status.is_ok():

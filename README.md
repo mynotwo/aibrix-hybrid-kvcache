@@ -46,6 +46,12 @@ These tests use constructed tensors; they do not establish model compatibility.
 The current CUDA checks run with vLLM 0.30.0, Torch 2.13.0+cu130 and CUDA 13.0.
 Other versions require independent verification; `>=0.30` is not a support promise.
 
+## Upstream collaboration
+
+- [Design RFC](https://github.com/vllm-project/aibrix/issues/3220)
+- [First backend PR (draft)](https://github.com/vllm-project/aibrix/pull/3221)
+- [Model correctness investigation](https://github.com/mynotwo/aibrix-hybrid-kvcache/issues/1)
+
 ## Contribute
 
 Start with an issue that includes the source commit, runtime/model revisions,

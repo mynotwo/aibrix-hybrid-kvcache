@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Reproducible streaming benchmark for Phase 0 KV-cache experiments."""
 
 import argparse
@@ -28,9 +42,7 @@ def gpu_used_bytes() -> int | None:
             text=True,
             timeout=5,
         )
-        used_mib = sum(
-            int(line.strip()) for line in result.stdout.splitlines()
-        )
+        used_mib = sum(int(line.strip()) for line in result.stdout.splitlines())
         return used_mib * 2**20
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -169,7 +181,9 @@ def storage_usage(root: Path | None) -> dict[str, int | None]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--endpoint", default="http://127.0.0.1:18084/v1/completions")
+    parser.add_argument(
+        "--endpoint", default="http://127.0.0.1:18084/v1/completions"
+    )
     parser.add_argument("--model", required=True)
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)

@@ -1,4 +1,18 @@
 #!/usr/bin/env python3
+# Copyright 2024 The Aibrix Team.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# 	http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 """Validate v1 traces and attribute observed host latency via explicit DAGs.
 
 Parent edges describe ownership/start causality, not necessarily completion.
@@ -13,6 +27,7 @@ import json
 from dataclasses import asdict, dataclass, fields
 from graphlib import TopologicalSorter
 from pathlib import Path
+from typing import Any
 
 from aibrix_kvcache.compression_profiler.recorder import TraceRunStatus
 from aibrix_kvcache.compression_profiler.schema import TraceEvent
@@ -107,9 +122,11 @@ def _causal_states(dag, terminal):
             continue
         operation, limit = state
         row = dag.records[operation]
-        completed = {(p, dag.records[p]["end_ns"])
-                     for p in row.get("dependency_ids", ())
-                     if dag.records[p]["end_ns"] <= limit}
+        completed = {
+            (p, dag.records[p]["end_ns"])
+            for p in row.get("dependency_ids", ())
+            if dag.records[p]["end_ns"] <= limit
+        }
         owner, parent = None, row.get("parent_operation_id")
         if parent:
             prior = dag.records[parent]
@@ -127,12 +144,13 @@ def _causal_states(dag, terminal):
 
 
 def _overlap_intervals(records):
-    changes = {}
+    changes: dict[int, int] = {}
     for row in records:
         start, end = row["start_ns"], row["end_ns"]
         changes[start] = changes.get(start, 0) + 1
         changes[end] = changes.get(end, 0) - 1
-    count, prior, overlap, union = 0, None, [], 0
+    count, prior, union = 0, None, 0
+    overlap: list[tuple[int, int]] = []
     for time, delta in sorted(changes.items()):
         if prior is not None:
             if count > 0:
@@ -148,10 +166,16 @@ def _combine(paths, origin, limit, operation):
     """Union observed ownership/dependency time, with dependency precedence."""
     observed = [s for path in paths for s in path if s[1] != "unobserved"]
     points = sorted({origin, limit} | {t for s in observed for t in s[2:]})
-    result = []
+    result: list[tuple] = []
     for start, end in zip(points, points[1:]):
-        op, kind = next(((op, kind) for op, kind, a, b in observed
-                         if a <= start and end <= b), (operation, "unobserved"))
+        op, kind = next(
+            (
+                (op, kind)
+                for op, kind, a, b in observed
+                if a <= start and end <= b
+            ),
+            (operation, "unobserved"),
+        )
         if result and result[-1][:2] == (op, kind):
             result[-1] = (op, kind, result[-1][2], end)
         else:
@@ -171,7 +195,7 @@ def _category(row):
 
 
 def _merged(intervals):
-    result = []
+    result: list[tuple] = []
     for start, end in sorted(intervals):
         if result and start <= result[-1][1]:
             result[-1] = (result[-1][0], max(result[-1][1], end))
@@ -196,17 +220,24 @@ def critical_path(dag, terminal_event):
         )
     states, order = _causal_states(dag, terminal_event)
     terminal_end = dag.records[terminal_event]["end_ns"]
-    limits = {}
+    limits: dict[str, int] = {}
     for op, limit in order:
         limits[op] = max(limits.get(op, limit), limit)
     # Report observed host overlap through the terminal, independently of
     # which ownership prefix supplied critical work. Future completions were
     # excluded above, rather than converted to negative/zero-length spans.
-    bounded = [dict(dag.records[op], end_ns=min(dag.records[op]["end_ns"],
-                                             terminal_end))
-               for op in limits if dag.records[op]["start_ns"] < terminal_end]
+    bounded = [
+        dict(
+            dag.records[op], end_ns=min(dag.records[op]["end_ns"], terminal_end)
+        )
+        for op in limits
+        if dag.records[op]["start_ns"] < terminal_end
+    ]
     overlaps, union = _overlap_intervals(bounded)
-    timings, paths, weights, origins = {}, {}, {}, {}
+    timings: dict[str, OperationTiming] = {}
+    paths: dict[tuple[str, int], list[tuple]] = {}
+    weights: dict[tuple[str, int], int] = {}
+    origins: dict[tuple[str, int], int] = {}
     for state in order:
         op, limit = state
         row = dag.records[op]
@@ -229,8 +260,11 @@ def critical_path(dag, terminal_event):
             ready = begin
         if owner:
             candidates.append(paths[owner])
-        origins[state] = min([begin] + [origins[p] for p in dependencies]
-                             + ([origins[owner]] if owner else []))
+        origins[state] = min(
+            [begin]
+            + [origins[p] for p in dependencies]
+            + ([origins[owner]] if owner else [])
+        )
         # Slack preserves the observed edge lag, including queue/idle time.
         weights[state] = limit - ready
         own = []
@@ -249,8 +283,11 @@ def critical_path(dag, terminal_event):
     for category in components:
         if category == "serial":
             continue
-        windows = _merged((r["start_ns"], r["end_ns"])
-                          for r in bounded if _category(r) == category)
+        windows = _merged(
+            (r["start_ns"], r["end_ns"])
+            for r in bounded
+            if _category(r) == category
+        )
         components[category] = sum(end - start for start, end in windows)
         resource_windows.extend(windows)
     resource_windows = _merged(resource_windows)
@@ -262,8 +299,7 @@ def critical_path(dag, terminal_event):
         category = _category(dag.records[op]) if kind == "active" else "serial"
         if category == "serial":
             components["serial"] += duration - sum(
-                max(0, min(end, b) - max(start, a))
-                for a, b in resource_windows
+                max(0, min(end, b) - max(start, a)) for a, b in resource_windows
             )
     deadlines = {terminal: terminal_end}
     for state in reversed(order):
@@ -396,9 +432,7 @@ def analyze(events, run_status, output_dir, terminal_kinds=None):
     try:
         if len(run_status) != len(events):
             # Each process publishes its status only on a clean close.
-            raise TraceValidationError(
-                ValidationReport(False, ("run_status",))
-            )
+            raise TraceValidationError(ValidationReport(False, ("run_status",)))
         records = [
             json.loads(line)
             for path in events
@@ -412,19 +446,22 @@ def analyze(events, run_status, output_dir, terminal_kinds=None):
         terminals = [
             op for op in dag.order if dag.records[op]["event_type"] in kinds
         ]
+
         def identity(row):
-            return tuple(row[n] for n in (
-                "experiment_id", "run_id", "request_id"
-            ))
-        if not terminals or terminal_kinds is None and {
-            identity(r) for r in records
-        } - {
-            identity(dag.records[op]) for op in terminals
-        }:
+            return tuple(
+                row[n] for n in ("experiment_id", "run_id", "request_id")
+            )
+
+        if (
+            not terminals
+            or terminal_kinds is None
+            and {identity(r) for r in records}
+            - {identity(dag.records[op]) for op in terminals}
+        ):
             raise TraceValidationError(
                 ValidationReport(False, ("missing_terminal",))
             )
-        observed = {}
+        observed: dict[str, dict[str, Any]] = {}
         for terminal in terminals:
             result = critical_path(dag, terminal)
             results.append(asdict(result))
@@ -491,9 +528,7 @@ def main():
         help="event type ending each analyzed path (default: tokens)",
     )
     args = parser.parse_args()
-    return analyze(
-        args.events, args.run_status, args.output_dir, args.terminal
-    )
+    return analyze(args.events, args.run_status, args.output_dir, args.terminal)
 
 
 if __name__ == "__main__":

@@ -107,11 +107,17 @@ class _L2Trace(OperationTrace):
         if status.is_ok() or status.is_not_found():
             return
         self.event(
-            EventType.ERROR_RECOVERY, key, start, dependencies,
-            result="rejected", restore_result="rejected",
-            error_class=(type(status.value).__name__
-                         if isinstance(status.value, Exception)
-                         else status.error_code.name),
+            EventType.ERROR_RECOVERY,
+            key,
+            start,
+            dependencies,
+            result="rejected",
+            restore_result="rejected",
+            error_class=(
+                type(status.value).__name__
+                if isinstance(status.value, Exception)
+                else status.error_code.name
+            ),
         )
 
 
@@ -172,7 +178,9 @@ class L2Cache(MeasurableBase):
             else None
         )
         self._codec = compression.lower() or None
-        self._profiler_recorder = NullRecorder()
+        self._profiler_recorder: NullRecorder | ShardedRingRecorder = (
+            NullRecorder()
+        )
         mode, capacity, output, requests = _profiler_config()
         self._profiler_mode, self._profiler_requests = mode, requests
 
@@ -643,7 +651,7 @@ class L2Cache(MeasurableBase):
             )
         started = trace.clock() if trace is not None else 0
         cpu_started = time.process_time_ns()
-        dependency = ()
+        dependency: tuple[str, ...] = ()
         try:
             block = self._compression.encode(
                 mr.tobytes(),
@@ -770,7 +778,8 @@ class L2Cache(MeasurableBase):
     ) -> Status[int]:
         nr = 0
         for batch in block_batches:
-            status = await self._backend_mget_impl(*zip(*batch), trace=trace)
+            keys, regions = zip(*batch)
+            status = await self._backend_mget_impl(keys, regions, trace=trace)
 
             should_break = False
             if not status.is_ok():
@@ -935,7 +944,7 @@ class L2Cache(MeasurableBase):
                     "MemoryRegion",
                 )
             started = trace.clock() if trace is not None else 0
-            dependency = ()
+            dependency: tuple[str, ...] = ()
             try:
                 status = await self._backend.get_bytes(cache_key)
             except Exception as exc:
@@ -1197,7 +1206,7 @@ class L2Cache(MeasurableBase):
         mrs: List[MemoryRegion] = []
         for key_batch in self._cache_block_key_batches(prefix, query):
             start = trace.clock() if trace else 0
-            trace_keys = [] if trace else None
+            trace_keys: list[bytes] | None = [] if trace else None
             tasks = []
             async with asyncio.TaskGroup() as tg:
                 for _, key_str in key_batch:
@@ -1205,7 +1214,7 @@ class L2Cache(MeasurableBase):
                         trace_keys.append(key_str)
                     tasks.append(tg.create_task(self._backend.acquire(key_str)))
 
-            if trace:
+            if trace and trace_keys is not None:
                 with trace.observation():
                     for key, task in zip(trace_keys, tasks):
                         status = task.result()
