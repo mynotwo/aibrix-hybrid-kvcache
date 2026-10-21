@@ -23,6 +23,19 @@ The implementation lives under `python/aibrix_kvcache`: `compression` provides
 lossless envelopes, `compression_profiler` records causal stages and byte
 accounting, and `integration/vllm/hybrid` implements the external connector.
 
+## Try the CPU example
+
+Run the real variable-length MEMORY byte path, lossless envelopes and trace
+recorder without a GPU, model weights, or Kubernetes. The [CPU quickstart](python/aibrix_kvcache/tools/CPU_QUICKSTART.md)
+includes a pinned checkout, requirements, expected output and troubleshooting.
+It produces readable JSON/JSONL artifacts and fails if byte equality, identity,
+checksum, capacity or reader protection does not hold.
+
+[Read the technical article](python/aibrix_kvcache/tools/HYBRID_KV_ARTICLE.md)
+for the hybrid state/span design, published synthetic data and current
+whole-model failure evidence. This is a research entry point, not a validated
+model-serving or speedup demonstration.
+
 ## Run the CPU checks
 
 Use Python 3.11 or 3.12 and the package's existing dependencies:
