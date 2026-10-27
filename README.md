@@ -1,14 +1,27 @@
 # AIBrix Hybrid KV Cache
 
-Experimental hybrid-model prefix-cache offloading and compression profiling,
-built on [AIBrix](https://github.com/vllm-project/aibrix). A saved prefix combines
-recurrent state at an aligned boundary with its full-attention spans, so an
-external cache can restore both kinds of state together.
+**What must a hybrid-model prefix cache preserve before it can be reused?**
 
-> **Experimental research integration.** This is an independent downstream
-> project, not an official AIBrix release. Tensor-level CPU/CUDA round trips
-> pass; whole-model output equivalence is unresolved. Do not treat the included
-> historical latency observations as a validated performance guarantee.
+A hybrid prefix combines recurrent state at an aligned boundary with
+full-attention spans. This downstream AIBrix project studies how to represent,
+store and restore those pieces together, and how to inspect the compression
+work around them.
+
+The directly runnable entry is a variable-length byte path with bounded MEMORY
+storage, lossless envelopes and trace accounting. Whole-model output equivalence
+remains unresolved. This is an independent experimental integration, not an
+official AIBrix release or a validated serving-speed demonstration.
+
+## Three parts you can inspect independently
+
+| Part | Entry point | Evidence and boundary |
+|---|---|---|
+| Storage contract | [CPU quickstart](python/aibrix_kvcache/tools/CPU_QUICKSTART.md) | Actual MEMORY operations, byte equality, capacity/lease guards and trace events on synthetic inputs |
+| Hybrid state/span design | [Technical article](python/aibrix_kvcache/tools/HYBRID_KV_ARTICLE.md) | Record design, accounting and published failure evidence |
+| Whole-model restore | [Correctness investigation](https://github.com/mynotwo/aibrix-hybrid-kvcache/issues/1) | Strict model acceptance remains unresolved; tensor round trips do not establish it |
+
+Start with the CPU example to inspect the contract without model weights or a
+cluster. Use the investigation to judge the remaining integration work.
 
 ## Explore
 
@@ -30,6 +43,17 @@ recorder without a GPU, model weights, or Kubernetes. The [CPU quickstart](pytho
 includes a pinned checkout, requirements, expected output and troubleshooting.
 It produces readable JSON/JSONL artifacts and fails if byte equality, identity,
 checksum, capacity or reader protection does not hold.
+
+After installing the guide's core dependencies, run from the checkout root:
+
+```bash
+PYTHONPATH=python/aibrix_kvcache python -m tools.cpu_quickstart \
+  --output work/cpu-demo-1
+```
+
+A successful run reports byte-identity, checksum, capacity and reader-protection
+checks and writes a summary plus trace events. The named state/span payloads are
+synthetic byte vectors, not restored model state.
 
 [Read the technical article](python/aibrix_kvcache/tools/HYBRID_KV_ARTICLE.md)
 for the hybrid state/span design, published synthetic data and current
@@ -78,6 +102,9 @@ are preserved. The upstream overview below describes AIBrix, not capabilities
 validated by this experimental extension.
 
 ---
+
+<details>
+<summary>Upstream AIBrix overview and cluster installation</summary>
 
 ## Upstream AIBrix
 
@@ -200,3 +227,5 @@ Full guides live at [aibrix.readthedocs.io](https://aibrix.readthedocs.io/latest
 Contributions are welcome. Read the [contributing guide](./CONTRIBUTING.md), talk in [#aibrix](https://vllm-dev.slack.com/archives/C08EQ883CSV) on the vLLM Slack, or email [maintainers@aibrix.ai](mailto:maintainers@aibrix.ai).
 
 Bugs and feature requests go on [GitHub Issues](https://github.com/vllm-project/aibrix/issues). AIBrix is licensed under [Apache 2.0](LICENSE).
+
+</details>
