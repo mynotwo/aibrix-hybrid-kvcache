@@ -237,8 +237,12 @@ class ShardedRingRecorder:
             targets = tuple((shard, shard.accepted) for shard in self._shards)
             self._condition.notify_all()
             self._condition.wait_for(
-                lambda: self._export_failed
-                or all(shard.exported >= target for shard, target in targets)
+                lambda: (
+                    self._export_failed
+                    or all(
+                        shard.exported >= target for shard, target in targets
+                    )
+                )
             )
 
     def close(self) -> None:

@@ -726,8 +726,10 @@ class AIBrixOffloadingConnectorScheduler:
 
         # 4. keep requests that are in the WAITING_FOR_RECV state
         meta = self._scheduler_meta.get(
-            lambda req: req.state
-            == AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV
+            lambda req: (
+                req.state
+                == AIBrixOffloadingConnectorRequestState.WAITING_FOR_RECV
+            )
         )
 
         logger.debug("SCHEDULER: build_connector_meta, meta=%s", meta.__dict__)
@@ -747,8 +749,10 @@ class AIBrixOffloadingConnectorScheduler:
             "Num. of scheduled requests: %s",
             len(
                 self._scheduler_meta.get(
-                    lambda req: req.state
-                    == AIBrixOffloadingConnectorRequestState.RECEIVING
+                    lambda req: (
+                        req.state
+                        == AIBrixOffloadingConnectorRequestState.RECEIVING
+                    )
                 )
             ),
         )

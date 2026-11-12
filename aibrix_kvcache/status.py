@@ -120,8 +120,8 @@ class Status(Generic[T]):
     def __getattr__(self, name):
         if name.startswith("is_"):
             expected_code = name[3:].upper()
-            return lambda: self.error_code == getattr(
-                StatusCodes, expected_code, None
+            return lambda: (
+                self.error_code == getattr(StatusCodes, expected_code, None)
             )
         raise AttributeError(f"{name} not found")
 

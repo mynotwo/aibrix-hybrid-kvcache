@@ -866,8 +866,10 @@ class AIBrixPDReuseConnectorScheduler:
             "Num. of scheduled requests: %s",
             len(
                 self._scheduler_meta.get(
-                    lambda req: req.state
-                    == AIBrixPDReuseConnectorRequestState.RECEIVING
+                    lambda req: (
+                        req.state
+                        == AIBrixPDReuseConnectorRequestState.RECEIVING
+                    )
                 )
             ),
         )

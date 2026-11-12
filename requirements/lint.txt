@@ -1,2 +1,3 @@
 # formatting
 pre-commit==4.0.1
+ruff==0.17.5

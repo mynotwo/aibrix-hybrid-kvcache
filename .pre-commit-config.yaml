@@ -7,7 +7,7 @@ default_stages:
   - manual # Run in CI
 repos:
 - repo: https://github.com/astral-sh/ruff-pre-commit
-  rev: v0.11.7
+  rev: v0.17.5
   hooks:
   - id: ruff
     args: [--output-format, github, --fix, --config, &pyproject_toml 'pyproject.toml']

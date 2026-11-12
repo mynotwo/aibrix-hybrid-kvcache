@@ -46,7 +46,6 @@ from aibrix_kvcache.compression_profiler.schema import (  # noqa: E402
 from aibrix_kvcache.compression_profiler.validation import (  # noqa: E402
     validate_byte_accounting,
 )
-
 from tools import compression_memory_sample as memory  # noqa: E402
 from tools.compression_impact_analyze import (  # noqa: E402
     TraceValidationError,

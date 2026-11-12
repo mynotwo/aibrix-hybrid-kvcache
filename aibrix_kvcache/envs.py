@@ -283,14 +283,12 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_META_SERVICE_REFRESH_INTERVAL_S", "30")
     ),
-    "AIBRIX_KV_CACHE_OL_META_SERVICE_URL": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_META_SERVICE_URL", "").strip()
-    ),
-    "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY", ""
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_META_SERVICE_URL": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_META_SERVICE_URL", ""
+    ).strip(),
+    "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_META_SERVICE_CLUSTER_META_KEY", ""
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_L2_CACHE_PLACEMENT_POLICY", "SIMPLE")
         .strip()
@@ -370,11 +368,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         os.getenv("AIBRIX_KV_CACHE_OL_ROCKSDB_MAX_BACKGROUND_JOBS", "8")
     ),
     # ================== InfiniStore Env Vars ==================
-    "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR", "127.0.0.1"
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_INFINISTORE_HOST_ADDR", "127.0.0.1"
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_SERVICE_PORT", "12345")
     ),
@@ -386,11 +382,9 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
     "AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_INFINISTORE_IB_PORT", "1")
     ),
-    "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE", "Ethernet"
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_INFINISTORE_LINK_TYPE", "Ethernet"
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_INFINISTORE_VISIBLE_DEV_LIST": lambda: list(
         filter(
             None,
@@ -404,15 +398,15 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         in ("1", "true")
     ),
     # ================== HPKV Env Vars ==================
-    "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR", "127.0.0.1").strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_ADDR", "127.0.0.1"
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_HPKV_REMOTE_PORT": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_REMOTE_PORT", "12346")
     ),
-    "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR", "127.0.0.1").strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_ADDR", "127.0.0.1"
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT": lambda: int(
         os.getenv("AIBRIX_KV_CACHE_OL_HPKV_LOCAL_PORT", "12345")
     ),
@@ -421,12 +415,10 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         in ("1", "true")
     ),
     # ================== PrisKV Env Vars ==================
-    "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR",
-            os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR", "127.0.0.1"),
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_ADDR",
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_REMOTE_ADDR", "127.0.0.1"),
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT": lambda: int(
         os.getenv(
             "AIBRIX_KV_CACHE_OL_PRISKV_REMOTE_PORT",
@@ -442,12 +434,10 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         .lower()
         in ("1", "true")
     ),
-    "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD",
-            os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", ""),
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_PRISKV_PASSWORD",
+        os.getenv("AIBRIX_KV_CACHE_OL_PRIS_PASSWORD", ""),
+    ).strip(),
     "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY": lambda: (
         os.getenv(
             "AIBRIX_KV_CACHE_OL_PRISKV_USE_ZERO_COPY",
@@ -458,25 +448,21 @@ kv_cache_ol_environment_variables: Dict[str, Callable[[], Any]] = {
         in ("1", "true")
     ),
     # ================== RDMA Auto-Detection Env Vars ==================
-    "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_TRANSPORT_RDMA_ADDR_RANGE", "::/0"
+    ).strip(),
     # ==================== Profiling Env Vars ====================
     "AIBRIX_KV_CACHE_OL_PROFILING_ENABLED": lambda: (
         os.getenv("AIBRIX_KV_CACHE_OL_PROFILING_ENABLED", "0").strip().lower()
         in ("1", "true")
     ),
-    "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS": lambda: (
-        os.getenv(
-            "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS", "http://0.0.0.0:4040"
-        ).strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_PROFILING_SERVER_ADDRESS", "http://0.0.0.0:4040"
+    ).strip(),
     # ================== EIC Env Vars ==================
-    "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE": lambda: (
-        os.getenv("AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE", "").strip()
-    ),
+    "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE": lambda: os.getenv(
+        "AIBRIX_KV_CACHE_OL_EIC_CONFIG_FILE", ""
+    ).strip(),
     # ================== SHFS Env Vars ==================
     "AIBRIX_KV_CACHE_OL_SHFS_ROOT": lambda: os.path.expanduser(
         os.getenv(
