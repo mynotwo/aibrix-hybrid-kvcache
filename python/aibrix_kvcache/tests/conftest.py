@@ -230,8 +230,6 @@ def make_block_tables_slot_mapping(
     * slot_mapping_list: slot mapping for sequence
     * max_block_idx: the highest block address within this block table
     '''
-    from vllm.utils import make_tensor_with_pad
-
     # Provision minimum number of KV cache blocks
     num_blocks_list = [
         (num_tokens + block_size) // block_size
@@ -258,10 +256,11 @@ def make_block_tables_slot_mapping(
         block_base_idx -= num_blocks
         block_tables.append(block_table)
 
-    block_tables_tensor = make_tensor_with_pad(
-        block_tables,
-        max_len=max_block_table_len + block_table_pad_tokens,
-        pad=0,
+    # Same result as vllm.utils.make_tensor_with_pad, without importing vLLM
+    # so the CPU suite runs on machines that cannot install it.
+    width = max_block_table_len + block_table_pad_tokens
+    block_tables_tensor = torch.tensor(
+        [row + [0] * (width - len(row)) for row in block_tables],
         dtype=torch.int,
     )
 
