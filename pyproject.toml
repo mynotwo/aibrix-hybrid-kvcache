@@ -1,7 +1,7 @@
 [project]
-name = "aibrix-kvcache"
-description = "AIBrix KV Cache offloading framework for cross-engine KV reuse"
-authors = [{name = "AIBrix Team"}]
+name = "aibrix-hybrid-kvcache"
+description = "Hybrid (recurrent state + attention) KV cache offloading and lossless compression accounting, built on the AIBrix KV cache"
+authors = [{name = "AIBrix Team"}, {name = "aibrix-hybrid-kvcache contributors"}]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 readme = "README.md"

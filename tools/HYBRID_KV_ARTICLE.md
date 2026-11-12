@@ -70,7 +70,7 @@ No GPU, vLLM server, Redis server, Kubernetes cluster, model weights or request
 credentials are needed. Torch is an existing import dependency even on CPU.
 
 ```bash
-git clone --branch cpu-quickstart-v1 --depth 1 \
+git clone --depth 1 \
   https://github.com/mynotwo/aibrix-hybrid-kvcache.git
 cd aibrix-hybrid-kvcache
 python3.12 -m venv .venv

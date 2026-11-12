@@ -25,7 +25,7 @@ read its run result before treating that environment as verified for this tag.
 ## Run from a new checkout
 
 ```bash
-git clone --branch cpu-quickstart-v1 --depth 1 \
+git clone --depth 1 \
   https://github.com/mynotwo/aibrix-hybrid-kvcache.git
 cd aibrix-hybrid-kvcache
 python3.12 -m venv .venv
@@ -35,7 +35,8 @@ PYTHONPATH=. python -m tools.cpu_quickstart \
   --output work/cpu-demo-1
 ```
 
-`cpu-quickstart-v1` pins this example, not a production/model-support release.
+The `cpu-quickstart-v1` tag pins the version published with the article; it
+uses the older `python/aibrix_kvcache` layout, so prefix paths accordingly.
 Python 3.11 also belongs to the package CI matrix. Use `python3.11` instead of
 `python3.12` if that is your installed interpreter.
 
@@ -101,7 +102,7 @@ volatile; it is not cross-process sharing or a total host-memory limit.
 
 | Symptom | Cause or next check |
 | --- | --- |
-| `No module named aibrix_kvcache` or `tools.cpu_quickstart` | Run from the repository root with the shown `PYTHONPATH`. Check that you checked out `cpu-quickstart-v1`, not the older experimental tag. |
+| `No module named aibrix_kvcache` or `tools.cpu_quickstart` | Run from the repository root with the shown `PYTHONPATH`. On tags `cpu-quickstart-v1` and older, use `PYTHONPATH=python/aibrix_kvcache`. |
 | Missing Torch, zstandard, or another import | Check `python -m pip --version` uses the activated environment, then install the existing core requirements. |
 | `--output already exists` | Choose a new path, such as `work/cpu-demo-2`. Existing results are never overwritten. |
 | `Failed to read commit hash` / missing `_version` warning | Expected for a source-only checkout; it is not a failed byte-round-trip check. |
