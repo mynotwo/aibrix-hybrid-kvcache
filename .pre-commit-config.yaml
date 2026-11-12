@@ -10,9 +10,9 @@ repos:
   rev: v0.11.7
   hooks:
   - id: ruff
-    args: [--output-format, github, --fix, --config, &pyproject_toml 'python/aibrix_kvcache/pyproject.toml']
-    files: &aibrix_kvcache_files python/aibrix_kvcache/.*
-    exclude: &aibrix_py_exclude 'python/aibrix_kvcache/(scripts|tests)/.*|setup.py|common/absl_logging.py'
+    args: [--output-format, github, --fix, --config, &pyproject_toml 'pyproject.toml']
+    files: &aibrix_kvcache_files .*
+    exclude: &aibrix_py_exclude '(scripts|tests)/.*|setup.py|common/absl_logging.py'
   - id: ruff-format
     args: [--config, *pyproject_toml]
     files: *aibrix_kvcache_files
@@ -63,11 +63,11 @@ repos:
     files: *aibrix_kvcache_files
   - id: check-aibrix-header
     name: Check AIBrix headers
-    entry: python python/aibrix_kvcache/scripts/check_aibrix_header.py
+    entry: python scripts/check_aibrix_header.py
     language: python
     types: [python]
     files: *aibrix_kvcache_files
-    exclude: 'python/aibrix_kvcache/setup.py'
+    exclude: 'setup.py'
   - id: suggestion
     name: Suggestion
     entry: bash -c 'echo "To bypass pre-commit hooks, add --no-verify to git commit."'

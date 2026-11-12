@@ -435,8 +435,8 @@ def get_gaudi_sw_version():
 
 def get_aibrix_version() -> str:
     version = get_version(
-        root="../..",
-        write_to="python/aibrix_kvcache/aibrix_kvcache/_version.py",
+        root=".",
+        write_to="aibrix_kvcache/_version.py",
     )
 
     sep = "+" if "+" not in version else "."  # dev versions might contain +

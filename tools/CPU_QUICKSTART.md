@@ -30,8 +30,8 @@ git clone --branch cpu-quickstart-v1 --depth 1 \
 cd aibrix-hybrid-kvcache
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r python/aibrix_kvcache/requirements/core.txt
-PYTHONPATH=python/aibrix_kvcache python -m tools.cpu_quickstart \
+python -m pip install -r requirements/core.txt
+PYTHONPATH=. python -m tools.cpu_quickstart \
   --output work/cpu-demo-1
 ```
 
@@ -115,11 +115,11 @@ Install test tools only if running the regression suite:
 
 ```bash
 python -m pip install pytest pytest-asyncio pytest-mock
-PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
-  python/aibrix_kvcache/tests/test_cpu_quickstart.py \
-  python/aibrix_kvcache/tests/test_memory_connector.py \
-  python/aibrix_kvcache/tests/test_connector_inheritance.py \
-  python/aibrix_kvcache/tests/test_l2cache.py
+PYTHONPATH=. python -m pytest -q \
+  tests/test_cpu_quickstart.py \
+  tests/test_memory_connector.py \
+  tests/test_connector_inheritance.py \
+  tests/test_l2cache.py
 ```
 
 [Published sample data](quickstart-evidence.json) includes the summary,

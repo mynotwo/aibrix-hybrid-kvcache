@@ -106,6 +106,6 @@ matched experiment to measure production-mode overhead. The strict gate can
 fail on unresolved whole-model differences and returns nonzero in that case:
 
 ```
-MODEL=/models/Qwen3-Next SRC=$PWD/python/aibrix_kvcache DEPS=/path/to/nvcomp \
+MODEL=/models/Qwen3-Next SRC=$PWD DEPS=/path/to/nvcomp \
 RUNS=/data/runs tools/qwen_next_hybrid/bench.sh "8150 32150 128150" vanilla identity ans
 ```

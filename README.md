@@ -16,8 +16,8 @@ official AIBrix release or a validated serving-speed demonstration.
 
 | Part | Entry point | Evidence and boundary |
 |---|---|---|
-| Storage contract | [CPU quickstart](python/aibrix_kvcache/tools/CPU_QUICKSTART.md) | Actual MEMORY operations, byte equality, capacity/lease guards and trace events on synthetic inputs |
-| Hybrid state/span design | [Technical article](python/aibrix_kvcache/tools/HYBRID_KV_ARTICLE.md) | Record design, accounting and published failure evidence |
+| Storage contract | [CPU quickstart](tools/CPU_QUICKSTART.md) | Actual MEMORY operations, byte equality, capacity/lease guards and trace events on synthetic inputs |
+| Hybrid state/span design | [Technical article](tools/HYBRID_KV_ARTICLE.md) | Record design, accounting and published failure evidence |
 | Whole-model restore | [Correctness investigation](https://github.com/mynotwo/aibrix-hybrid-kvcache/issues/1) | Strict model acceptance remains unresolved; tensor round trips do not establish it |
 
 Start with the CPU example to inspect the contract without model weights or a
@@ -25,21 +25,21 @@ cluster. Use the investigation to judge the remaining integration work.
 
 ## Explore
 
-- [Connector guide](python/aibrix_kvcache/aibrix_kvcache/integration/vllm/hybrid/README.md):
+- [Connector guide](aibrix_kvcache/integration/vllm/hybrid/README.md):
   configuration, failure behavior, limitations and benchmark commands.
-- [Technical note](python/aibrix_kvcache/tools/qwen_next_hybrid/TECHNICAL_NOTE.md):
+- [Technical note](tools/qwen_next_hybrid/TECHNICAL_NOTE.md):
   architecture, what compression can improve, and evidence boundaries.
-- [Verification record](python/aibrix_kvcache/tools/qwen_next_hybrid/VERIFICATION.md):
+- [Verification record](tools/qwen_next_hybrid/VERIFICATION.md):
   exact source version, environments, test commands and unresolved acceptance.
 
-The implementation lives under `python/aibrix_kvcache`: `compression` provides
+The implementation lives at the repository root: `compression` provides
 lossless envelopes, `compression_profiler` records causal stages and byte
 accounting, and `integration/vllm/hybrid` implements the external connector.
 
 ## Try the CPU example
 
 Run the real variable-length MEMORY byte path, lossless envelopes and trace
-recorder without a GPU, model weights, or Kubernetes. The [CPU quickstart](python/aibrix_kvcache/tools/CPU_QUICKSTART.md)
+recorder without a GPU, model weights, or Kubernetes. The [CPU quickstart](tools/CPU_QUICKSTART.md)
 includes a pinned checkout, requirements, expected output and troubleshooting.
 It produces readable JSON/JSONL artifacts and fails if byte equality, identity,
 checksum, capacity or reader protection does not hold.
@@ -47,7 +47,7 @@ checksum, capacity or reader protection does not hold.
 After installing the guide's core dependencies, run from the checkout root:
 
 ```bash
-PYTHONPATH=python/aibrix_kvcache python -m tools.cpu_quickstart \
+PYTHONPATH=. python -m tools.cpu_quickstart \
   --output work/cpu-demo-1
 ```
 
@@ -55,7 +55,7 @@ A successful run reports byte-identity, checksum, capacity and reader-protection
 checks and writes a summary plus trace events. The named state/span payloads are
 synthetic byte vectors, not restored model state.
 
-[Read the technical article](python/aibrix_kvcache/tools/HYBRID_KV_ARTICLE.md)
+[Read the technical article](tools/HYBRID_KV_ARTICLE.md)
 for the hybrid state/span design, published synthetic data and current
 whole-model failure evidence. This is a research entry point, not a validated
 model-serving or speedup demonstration.
@@ -69,13 +69,13 @@ git clone https://github.com/mynotwo/aibrix-hybrid-kvcache.git
 cd aibrix-hybrid-kvcache
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -r python/aibrix_kvcache/requirements/core.txt \
+python -m pip install -r requirements/core.txt \
   pytest pytest-asyncio pytest-mock
-PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
-  python/aibrix_kvcache/tests/test_hybrid_layout.py \
-  python/aibrix_kvcache/tests/test_hybrid_logic.py \
-  python/aibrix_kvcache/tests/test_hybrid_store.py \
-  python/aibrix_kvcache/tests/test_hybrid_gpu_codec.py
+PYTHONPATH=. python -m pytest -q \
+  tests/test_hybrid_layout.py \
+  tests/test_hybrid_logic.py \
+  tests/test_hybrid_store.py \
+  tests/test_hybrid_gpu_codec.py
 ```
 
 CUDA/nvCOMP tests skip when their hardware or optional dependency is absent.

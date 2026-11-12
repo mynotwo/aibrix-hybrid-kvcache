@@ -1,73 +1,43 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool, specifically when used with LiteIDE
-*.out
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
-bin/
-
-# Go workspace file
-go.work
-go.work.sum
-.idea
-.vscode
-.go-version
-.worklog/
-
-.DS_Store
+# python
 __pycache__
-*.xml
-.*.pid
 
-# Node.js
-node_modules/
+# pytest
+.benchmarks
+.pytest_cache
+
+# ruff
+.ruff_cache
+
+# mypy
+.mypy_cache
+
+# Distribution / packaging
+.Python
+build/
+cmake-build-*/
+CMakeUserPresets.json
+develop-eggs/
 dist/
-# Python virtual environment directory
-.venv
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+/.deps/
 
-# Jupyter notebook
-.ipynb_checkpoints/
-
-# Sphinx documentation
-docs/build/
-docs/source/locale/**/*.mo
-!**/*.template.rst
-
-# benchmark logs, result and figs
-benchmarks/autoscaling/logs
-benchmarks/autoscaling/output_stats
-benchmarks/autoscaling/workload_plot
-benchmarks/generator/traces/*
-benchmarks/output
-benchmarks/config/*.sh
-benchmarks/config/*/*.sh
-benchmarks/*.sh
-
-# simulator cache and output
-development/simulator/simulator_output
-development/simulator/cache
-
-# python build artifacts and data files
-python/aibrix/dist/
-python/aibrix/aibrix/batch/storage/data
-python/aibrix/.storage
-
-# downloaded xdit artifacts
-samples/multimodality/xDiT/xDiT-integration/xDiT
-
-# setuptools-scm generated version files
-**/_version.py
+# local
 .venv/
 work/
+.worklog/
+.DS_Store
+.idea
+.vscode

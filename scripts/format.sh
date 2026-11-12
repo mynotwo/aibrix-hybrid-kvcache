@@ -2,7 +2,7 @@
 set -eo pipefail
 
 # this stops git rev-parse from failing if we run this from the .git directory
-SUBDIR="python/aibrix_kvcache/"
+SUBDIR=""
 ROOT="$(git rev-parse --show-toplevel)/$SUBDIR"
 builtin cd "$ROOT" || exit 1
 

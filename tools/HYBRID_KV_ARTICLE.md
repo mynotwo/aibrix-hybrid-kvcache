@@ -75,8 +75,8 @@ git clone --branch cpu-quickstart-v1 --depth 1 \
 cd aibrix-hybrid-kvcache
 python3.12 -m venv .venv
 . .venv/bin/activate
-python -m pip install -r python/aibrix_kvcache/requirements/core.txt
-PYTHONPATH=python/aibrix_kvcache python -m tools.cpu_quickstart \
+python -m pip install -r requirements/core.txt
+PYTHONPATH=. python -m tools.cpu_quickstart \
   --output work/cpu-demo-1
 ```
 

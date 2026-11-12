@@ -2,7 +2,7 @@
 # Start unmodified vLLM 0.30 serving Qwen3-Next at TP8 with the AIBrix
 # hybrid connector (or without it: NOCONN=1), profiler on.
 #
-#   MODEL=/models/Qwen3-Next SRC=/path/to/python/aibrix_kvcache \
+#   MODEL=/models/Qwen3-Next SRC=/path/to/aibrix-hybrid-kvcache \
 #   DEPS=/path/to/site-packages RUNS=/path/to/runs RUN=ans CODEC=ANS serve.sh
 #
 # SRC: this package's source tree. DEPS: site-packages with its runtime

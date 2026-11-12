@@ -37,21 +37,21 @@ results and must not be inferred from this document.
 From the repository root, with the package's dependencies available:
 
 ```bash
-PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
-  python/aibrix_kvcache/tests/test_hybrid_layout.py \
-  python/aibrix_kvcache/tests/test_hybrid_logic.py \
-  python/aibrix_kvcache/tests/test_hybrid_store.py \
-  python/aibrix_kvcache/tests/test_hybrid_gpu_codec.py
+PYTHONPATH=. python -m pytest -q \
+  tests/test_hybrid_layout.py \
+  tests/test_hybrid_logic.py \
+  tests/test_hybrid_store.py \
+  tests/test_hybrid_gpu_codec.py
 
-PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
-  python/aibrix_kvcache/tests/test_compression*.py \
-  python/aibrix_kvcache/tests/test_memory_connector.py \
-  python/aibrix_kvcache/tests/test_l2cache.py \
-  python/aibrix_kvcache/tests/test_qwen_next*.py
+PYTHONPATH=. python -m pytest -q \
+  tests/test_compression*.py \
+  tests/test_memory_connector.py \
+  tests/test_l2cache.py \
+  tests/test_qwen_next*.py
 
-ruff check python/aibrix_kvcache/aibrix_kvcache/integration/vllm/hybrid \
-  python/aibrix_kvcache/tests/test_hybrid*.py
-bash -n python/aibrix_kvcache/tools/qwen_next_hybrid/{serve,bench}.sh
+ruff check aibrix_kvcache/integration/vllm/hybrid \
+  tests/test_hybrid*.py
+bash -n tools/qwen_next_hybrid/{serve,bench}.sh
 ```
 
 ## Whole-model acceptance
