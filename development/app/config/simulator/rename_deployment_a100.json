@@ -1,7 +1,0 @@
-[
-    {
-        "op": "replace",
-        "path": "/metadata/name",
-        "value": "simulator-llama2-7b-a100"
-    }
-]

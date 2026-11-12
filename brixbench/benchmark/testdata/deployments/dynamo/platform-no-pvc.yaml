@@ -1,6 +1,0 @@
-nats:
-  config:
-    jetstream:
-      fileStore:
-        pvc:
-          enabled: false
