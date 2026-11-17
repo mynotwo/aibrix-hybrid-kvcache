@@ -122,6 +122,14 @@ PYTHONPATH=python/aibrix_kvcache python -m pytest -q \
   python/aibrix_kvcache/tests/test_l2cache.py
 ```
 
+From a checkout of `main` (the script is newer than `cpu-quickstart-v1`), one
+command runs every CPU test of this downstream work and then this example.
+CI runs the same script on Linux with Python 3.11 and 3.12:
+
+```bash
+bash python/aibrix_kvcache/tools/cpu_checks.sh
+```
+
 [Published sample data](quickstart-evidence.json) includes the summary,
 all 16 trace records, dependency versions and a SHA-256 of the demo source.
 Only synthetic inputs are included. For full integration limits, see the

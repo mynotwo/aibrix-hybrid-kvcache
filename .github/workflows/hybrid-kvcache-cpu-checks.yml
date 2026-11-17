@@ -1,0 +1,48 @@
+name: Hybrid KVCache CPU Checks
+
+# Downstream-only: runs python/aibrix_kvcache/tools/cpu_checks.sh without the
+# native build that the upstream "Python AIBrix KVCache Tests" workflow needs.
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+      - '.github/workflows/hybrid-kvcache-cpu-checks.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - 'python/aibrix_kvcache/**'
+      - '.github/workflows/hybrid-kvcache-cpu-checks.yml'
+
+permissions:
+  contents: read
+
+# Cancel superseded pull-request runs so the newest push starts first.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cpu-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    name: Hybrid KVCache CPU Checks (${{ matrix.python-version }})
+    steps:
+      - name: Check out source repository
+        uses: actions/checkout@v6
+      - name: Set up Python environment ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only Torch first, as the CPU quickstart suggests for Linux.
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r python/aibrix_kvcache/requirements/core.txt \
+            pytest pytest-asyncio pytest-mock
+      - name: Run CPU checks
+        run: bash python/aibrix_kvcache/tools/cpu_checks.sh
